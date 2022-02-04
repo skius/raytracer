@@ -728,7 +728,7 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
                     // this is randomly scattered
                     let diffuse_out = (Vec3([x, y, z]) + normal).normalize();
 
-                    let new_dir = if obj.idx == 2 {
+                    let new_dir = if obj.idx == 0 {
                         fuzzy_out
                     } else {
                         diffuse_out
@@ -942,7 +942,7 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
 }
 
 fn main() {
-    const scale: u32 = 4;
+    const scale: u32 = 1;
 
     const width: u32 = scale * 160;
     const height: u32 = scale * 120;
@@ -1000,82 +1000,35 @@ fn main() {
             // t += re.ext_dt;
 
             let mut objects = Vec::new();
+
+            let mut floor = triangle_poly.clone();
+            floor.translate(Vec3([0.0, -0.1, 0.0]));
+            let obj = Object::from_mesh(floor, objects.len(), Kind::Matte(Vec3([0.7, 0.7, 0.7])));
+            objects.push(obj);
+
+            fn oscillate(t: f64) -> f64 {
+                3.0 * t.sin() + (3.0*t).sin()
+            }
+
             let mut phong = spot_poly.clone();
-            // phong.rotate_z(80.0 * (t * 1250.0).sin() * std::f64::consts::PI / 180.0);
+            phong.rotate_z(10.0 * oscillate(t * 40.0) * std::f64::consts::PI / 180.0);
             // phong.rotate_x(t * 10000.0 * std::f64::consts::PI / 180.0);
             // phong.rotate_x(40.0 * (t * 2500.0).cos() * std::f64::consts::PI / 180.0);
-            phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
+            phong.rotate_y((220.0 + 10.0 * (t*40.0).sin()) * std::f64::consts::PI / 180.0);
+            // phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
             // phong.rotate_y((150.0) * std::f64::consts::PI / 180.0);
-            phong.translate(Vec3([-1.0, 0.0, -2.5]));
+            phong.translate(Vec3([0.0, 0.0, -2.5]));
+            // phong.translate(Vec3([-1.0, 0.0, -2.5]));
             // let obj = Object::from_mesh(phong, objects.len(), Kind::Dielectric(1.5));
             let obj = Object::from_mesh(phong, objects.len(), Kind::Mirror);
             objects.push(obj);
 
-            // let pre = Instant::now();
-            // let mut flat_triangles = Vec::new();
-            // for (idx, &Triangle([vi1, vi2, vi3])) in phong.triangles.iter().enumerate() {
-            //     let v1 = phong.vertices[vi1];
-            //     let v2 = phong.vertices[vi2];
-            //     let v3 = phong.vertices[vi3];
-            //
-            //     let flat_tri = FlatTriangle {
-            //         vertices: [v1, v2, v3],
-            //         node_index: 0,
-            //         triangle_idx: idx,
-            //         obj_idx: objects.len(),
-            //     };
-            //     flat_triangles.push(flat_tri);
-            // }
-            // dbg!(Instant::now().duration_since(pre));
-            // let pre = Instant::now();
-            // let bvh = BVH::build(&mut flat_triangles);
-            // dbg!(Instant::now().duration_since(pre));
-            // objects.push(Object {
-            //     polygon_mesh: phong,
-            //     kind: Kind::Mirror,
-            //     // kind: Kind::Phong,
-            //     flat_triangles,
-            //     bvh: bvh,
-            //     idx: objects.len(),
-            // });
+            // let mut mirror = spot_poly.clone();
+            // mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
+            // mirror.translate(Vec3([1.0, 0.0, -2.5]));
+            // let obj = Object::from_mesh(mirror, objects.len(), Kind::Mirror);
+            // objects.push(obj);
 
-            let mut mirror = spot_poly.clone();
-            mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
-            mirror.translate(Vec3([1.0, 0.0, -2.5]));
-            let obj = Object::from_mesh(mirror, objects.len(), Kind::Mirror);
-            objects.push(obj);
-
-            // let pre = Instant::now();
-            // let mut flat_triangles = Vec::new();
-            // for (idx, &Triangle([vi1, vi2, vi3])) in mirror.triangles.iter().enumerate() {
-            //     let v1 = mirror.vertices[vi1];
-            //     let v2 = mirror.vertices[vi2];
-            //     let v3 = mirror.vertices[vi3];
-            //
-            //     let flat_tri = FlatTriangle {
-            //         vertices: [v1, v2, v3],
-            //         node_index: 0,
-            //         triangle_idx: idx,
-            //         obj_idx: objects.len(),
-            //     };
-            //     flat_triangles.push(flat_tri);
-            // }
-            // dbg!(Instant::now().duration_since(pre));
-            // let pre = Instant::now();
-            // let bvh = BVH::build(&mut flat_triangles);
-            // dbg!(Instant::now().duration_since(pre));
-            // objects.push(Object {
-            //     polygon_mesh: mirror,
-            //     // kind: Kind::Phong,
-            //     kind: Kind::Mirror,
-            //     flat_triangles,
-            //     bvh,
-            //     idx: objects.len(),
-            // });
-
-            let floor = triangle_poly.clone();
-            let obj = Object::from_mesh(floor, objects.len(), Kind::Matte(Vec3([0.7, 0.7, 0.7])));
-            objects.push(obj);
 
             dbg!(Instant::now().duration_since(start));
             let pre = Instant::now();
