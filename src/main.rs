@@ -7,6 +7,11 @@ use std::path::Path;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use ::image::*;
+use bvh::aabb::{AABB, Bounded};
+use bvh::bounding_hierarchy::BHShape;
+use bvh::bvh::BVH;
+use bvh::{Point3, Vector3};
+use bvh::ray::Ray;
 use piston_window::*;
 use rand::Rng;
 use rayon::prelude::*;
@@ -129,6 +134,17 @@ impl Mat3H {
             [c, s, 0.0, 0.0],
             [-s, c, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0]
+        ])
+    }
+
+    fn rot_x(theta: f64) -> Mat3H {
+        let c = theta.cos();
+        let s = theta.sin();
+        Mat3H([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, c,   -s,  0.0],
+            [0.0, s,   c,   0.0],
             [0.0, 0.0, 0.0, 1.0]
         ])
     }
@@ -270,10 +286,46 @@ enum Kind {
     Mirror,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Object {
     polygon_mesh: PolygonMesh,
     kind: Kind,
+    bvh: BVH,
+    flat_triangles: Vec<FlatTriangle>,
+    idx: usize,
+}
+
+impl Object {
+    fn hit(&self, origin: Vec3, dir: Vec3) -> Option<Hit> {
+        let ray = Ray::new(Point3::new(origin.0[0] as f32, origin.0[1] as f32, origin.0[2] as f32),
+                           Vector3::new(dir.0[0] as f32, dir.0[1] as f32, dir.0[2] as f32));
+
+        let hits = self.bvh.traverse(&ray, &self.flat_triangles);
+
+        let least = hits.par_iter().filter_map(|flat_tri| {
+            let v1 = flat_tri.vertices[0];
+            let v2 = flat_tri.vertices[1];
+            let v3 = flat_tri.vertices[2];
+
+            // assert!(flat_tri.obj_idx == self.idx);
+
+            // match ray_triangle_intersect(orig, dir, (v1, v2, v3)) {
+            match intersects_triangle(origin, dir, v1, v2, v3) {
+                Some(t) => Some((t, flat_tri.triangle_idx)),
+                None => None,
+            }
+            // }).fold(((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+        }).reduce(|| ((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+
+
+        if least.0.0 == f64::INFINITY {
+            None
+        } else {
+            Some(Hit::new(least.0.0, least.0.1, least.0.2, least.1))
+        }
+
+        // None
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -346,7 +398,7 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
     let mut closest_hit = Hit::new(f64::INFINITY, 0.0, 0.0, 0);
     let mut closest_obj_idx = usize::MAX;
     for (obj_idx, obj) in objects.into_iter().enumerate(){
-        let hit = obj.polygon_mesh.hit(origin, dir);
+        let hit = obj.hit(origin, dir);
         if let Some(hit) = hit {
             if hit < closest_hit {
                 closest_hit = hit;
@@ -370,6 +422,7 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
         let n3 = obj.polygon_mesh.vertice_normals[vi3];
 
         let normal = bary_interp(n1, n2, n3, hit.u, hit.v);
+        // dbg!(normal);
 
         let camera_dir = (-1.0 * dir).normalize();
         let light_dir = (light_pos - hit_pos).normalize();
@@ -426,7 +479,11 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
             let g = g as f64 / 255.0;
             let b = b as f64 / 255.0;
 
+            // let [r, g, b] = [1.0; 3];
+
             return [rr * r + specular, rg * g + specular, rb * b + specular];
+            // return [rr * r * 0.8 + r * 0.1 + specular, rg * g * 0.8 + g * 0.1 + specular, rb * b * 0.8 + b * 0.1 + specular];
+            // return [rr * r * 0.8  + specular, rg * g * 0.8 + specular, rb * b * 0.8 + specular];
         }
     }
 
@@ -443,33 +500,111 @@ struct PolygonMesh {
     texture: DynamicImage,
 }
 
-impl PolygonMesh {
-    fn hit(&self, origin: Vec3, dir: Vec3) -> Option<Hit> {
-        let least = self.triangles.par_iter().enumerate().filter_map(|(i, &Triangle([vi1, vi2, vi3]))| {
-            let v1 = self.vertices[vi1];
-            let v2 = self.vertices[vi2];
-            let v3 = self.vertices[vi3];
+// impl PolygonMesh {
+//     fn hit(&self, bvh: &BVH, origin: Vec3, dir: Vec3) -> Option<Hit> {
+//         let ray = Ray::new(Point3::new(origin.0[0] as f32, origin.0[1] as f32, origin.0[2] as f32),
+//                            Vector3::new(dir.0[0] as f32, dir.0[1] as f32, dir.0[2] as f32));
+//
+//         let hits = bvh.traverse(&ray);
+//
+//         let least = self.triangles.par_iter().enumerate().filter_map(|(i, &Triangle([vi1, vi2, vi3]))| {
+//             let v1 = self.vertices[vi1];
+//             let v2 = self.vertices[vi2];
+//             let v3 = self.vertices[vi3];
+//
+//             // match ray_triangle_intersect(orig, dir, (v1, v2, v3)) {
+//             match intersects_triangle(origin, dir, v1, v2, v3) {
+//                 Some(t) => Some((t, i)),
+//                 None => None,
+//             }
+//             // }).fold(((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+//         }).reduce(|| ((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+//
+//
+//         if least.0.0 == f64::INFINITY {
+//             None
+//         } else {
+//             Some(Hit::new(least.0.0, least.0.1, least.0.2, least.1))
+//         }
+//     }
+// }
 
-            // match ray_triangle_intersect(orig, dir, (v1, v2, v3)) {
-            match intersects_triangle(origin, dir, v1, v2, v3) {
-                Some(t) => Some((t, i)),
-                None => None,
-            }
-            // }).fold(((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
-        }).reduce(|| ((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+#[derive(Debug, Clone)]
+struct FlatTriangle {
+    vertices: [Vec3; 3],
+    node_index: usize,
+    triangle_idx: usize,
+    obj_idx: usize,
+}
 
+impl BHShape for FlatTriangle {
+    fn set_bh_node_index(&mut self, index: usize) {
+        self.node_index = index;
+    }
 
-        if least.0.0 == f64::INFINITY {
-            None
-        } else {
-            Some(Hit::new(least.0.0, least.0.1, least.0.2, least.1))
-        }
+    fn bh_node_index(&self) -> usize {
+        self.node_index
     }
 }
+
+impl Bounded for FlatTriangle {
+    fn aabb(&self) -> AABB {
+        let vertices = &self.vertices;
+        let mut x_min = vertices[0].0[0];
+        x_min = x_min.min(vertices[1].0[0]);
+        x_min = x_min.min(vertices[2].0[0]);
+
+        let mut x_max = vertices[0].0[0];
+        x_max = x_max.max(vertices[1].0[0]);
+        x_max = x_max.max(vertices[2].0[0]);
+
+        let mut y_min = vertices[0].0[1];
+        y_min = y_min.min(vertices[1].0[1]);
+        y_min = y_min.min(vertices[2].0[1]);
+
+        let mut y_max = vertices[0].0[1];
+        y_max = y_max.max(vertices[1].0[1]);
+        y_max = y_max.max(vertices[2].0[1]);
+
+        let mut z_min = vertices[0].0[2];
+        z_min = z_min.min(vertices[1].0[2]);
+        z_min = z_min.min(vertices[2].0[2]);
+
+        let mut z_max = vertices[0].0[2];
+        z_max = z_max.max(vertices[1].0[2]);
+        z_max = z_max.max(vertices[2].0[2]);
+
+        AABB::with_bounds(Point3::new(x_min as f32, y_min as f32, z_min as f32), Point3::new(x_max as f32, y_max as f32, z_max as f32))
+    }
+}
+
+
 
 impl PolygonMesh {
     fn rotate_y(&mut self, angle: f64) {
         let rot = Mat3H::rot_y(angle);
+
+        for vertice in &mut self.vertices {
+            *vertice = (rot * (*vertice).to_homogeneous()).homogeneous_divide();
+        }
+        for vertice_normal in &mut self.vertice_normals {
+            *vertice_normal = (rot * (*vertice_normal).to_homogeneous()).homogeneous_divide();
+        }
+    }
+
+    fn rotate_z(&mut self, angle: f64) {
+        let rot = Mat3H::rot_z(angle);
+
+        for vertice in &mut self.vertices {
+            *vertice = (rot * (*vertice).to_homogeneous()).homogeneous_divide();
+        }
+        for vertice_normal in &mut self.vertice_normals {
+            *vertice_normal = (rot * (*vertice_normal).to_homogeneous()).homogeneous_divide();
+        }
+    }
+
+    fn rotate_x(&mut self, angle: f64) {
+        let rot = Mat3H::rot_x(angle);
 
         for vertice in &mut self.vertices {
             *vertice = (rot * (*vertice).to_homogeneous()).homogeneous_divide();
@@ -514,11 +649,10 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
 }
 
 fn main() {
-    // const width: u32 = 160;
-    // const height: u32 = 120;
-
-    const width: u32 = 5*160;
-    const height: u32 = 5*120;
+    const width: u32 = 160;
+    const height: u32 = 120;
+    // const width: u32 = 9*160;
+    // const height: u32 = 9*120;
 
     // let (width, height) = (5*160, 5*120);
     // let (width, height) = (20, 30);
@@ -566,24 +700,67 @@ fn main() {
 
             let mut objects = Vec::new();
             let mut phong = spot_poly.clone();
-            phong.rotate_y((150.0 + t) * std::f64::consts::PI / 180.0);
+            // phong.rotate_z(80.0 * (t * 1250.0).sin() * std::f64::consts::PI / 180.0);
+            // phong.rotate_x(t * 10000.0 * std::f64::consts::PI / 180.0);
+            // phong.rotate_x(40.0 * (t * 2500.0).cos() * std::f64::consts::PI / 180.0);
+            phong.rotate_y((150.0 + t*10000.0) * std::f64::consts::PI / 180.0);
+            // phong.rotate_y((150.0) * std::f64::consts::PI / 180.0);
             phong.translate(Vec3([-1.0, 0.0, -2.5]));
+            let mut flat_triangles = Vec::new();
+            for (idx, &Triangle([vi1, vi2, vi3])) in phong.triangles.iter().enumerate() {
+                let v1 = phong.vertices[vi1];
+                let v2 = phong.vertices[vi2];
+                let v3 = phong.vertices[vi3];
+
+                let flat_tri = FlatTriangle {
+                    vertices: [v1, v2, v3],
+                    node_index: 0,
+                    triangle_idx: idx,
+                    obj_idx: objects.len(),
+                };
+                flat_triangles.push(flat_tri);
+            }
+            let bvh = BVH::build(&mut flat_triangles);
             objects.push(Object {
                 polygon_mesh: phong,
                 kind: Kind::Mirror,
                 // kind: Kind::Phong,
+                flat_triangles,
+                bvh: bvh,
+                idx: objects.len(),
             });
+
 
             let mut mirror = spot_poly.clone();
             mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
             mirror.translate(Vec3([1.0, 0.0, -2.5]));
+            let mut flat_triangles = Vec::new();
+            for (idx, &Triangle([vi1, vi2, vi3])) in mirror.triangles.iter().enumerate() {
+                let v1 = mirror.vertices[vi1];
+                let v2 = mirror.vertices[vi2];
+                let v3 = mirror.vertices[vi3];
+
+                let flat_tri = FlatTriangle {
+                    vertices: [v1, v2, v3],
+                    node_index: 0,
+                    triangle_idx: idx,
+                    obj_idx: objects.len(),
+                };
+                flat_triangles.push(flat_tri);
+            }
+            let bvh = BVH::build(&mut flat_triangles);
             objects.push(Object {
                 polygon_mesh: mirror,
+                // kind: Kind::Phong,
                 kind: Kind::Mirror,
+                flat_triangles,
+                bvh,
+                idx: objects.len(),
             });
 
-
+            dbg!(Instant::now().duration_since(start));
             render::<width, height>(&mut canvas, &objects);
+            dbg!(Instant::now().duration_since(start));
 
 
             // render(width, height, &mut canvas);
