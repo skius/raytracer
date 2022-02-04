@@ -426,9 +426,10 @@ struct PolygonMesh {
     vertices: Vec<Vec3>,
     vertice_normals: Vec<Vec3>,
     uv_coords: Vec<(f64, f64)>,
-    vertice_to_uv_idx: HashMap<usize, usize>,
+    // vertice_to_uv_idx: HashMap<usize, usize>,
     triangles: Vec<Triangle>,
     texture: DynamicImage,
+    triangle_to_v_to_uv_idx: HashMap<usize, [usize; 3]>
 }
 
 // impl PolygonMesh {
@@ -659,9 +660,9 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
         let camera_dir = (-1.0 * dir).normalize();
         let light_dir = (light_pos - hit_pos).normalize();
 
-        let (u1, v1) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.vertice_to_uv_idx[&vi1]];
-        let (u2, v2) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.vertice_to_uv_idx[&vi2]];
-        let (u3, v3) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.vertice_to_uv_idx[&vi3]];
+        let (u1, v1) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&hit.triangle_idx][0]];
+        let (u2, v2) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&hit.triangle_idx][1]];
+        let (u3, v3) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&hit.triangle_idx][2]];
 
         let text_u = bary_interp(u1, u2, u3, hit.u, hit.v);
         let text_v = bary_interp(v1, v2, v3, hit.u, hit.v);
@@ -1107,7 +1108,9 @@ fn load_obj(filename: impl AsRef<Path>, texturename: impl AsRef<Path>) -> Polygo
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
     let mut uvs = Vec::new();
-    let mut vertices_t = HashMap::new();
+    // let mut vertices_t = HashMap::new();
+
+    let mut tex_per_vertex_per_triangle = HashMap::new();
 
     let mut file = File::open(filename).unwrap();
     let mut content = String::new();
@@ -1135,16 +1138,22 @@ fn load_obj(filename: impl AsRef<Path>, texturename: impl AsRef<Path>) -> Polygo
 
                 triangles.push(Triangle([vi1, vi2, vi3]));
 
-                if vertices_t.contains_key(&vi1) {
-                    // if mismatch report
-                    if vertices_t[&vi1] != uv1 {
-                        println!("ALREADY HAS: {}, NEW: {}", vertices_t[&vi1], uv1);
-                    }
-                }
+                // if vertices_t.contains_key(&vi1) {
+                //     // if mismatch report
+                //     if vertices_t[&vi1] != uv1 {
+                //         println!("ALREADY HAS: {}, NEW: {}", vertices_t[&vi1], uv1);
+                //     }
+                // }
 
-                vertices_t.insert(vi1, uv1);
-                vertices_t.insert(vi2, uv2);
-                vertices_t.insert(vi3, uv3);
+                tex_per_vertex_per_triangle.insert(
+                    triangles.len() - 1,
+                    [uv1, uv2, uv3]
+                );
+
+
+                // vertices_t.insert(vi1, uv1);
+                // vertices_t.insert(vi2, uv2);
+                // vertices_t.insert(vi3, uv3);
             },
             "vt" => {
                 let v = parts[1..].iter().map(|x| x.parse::<f64>().unwrap()).collect::<Vec<_>>();
@@ -1184,7 +1193,8 @@ fn load_obj(filename: impl AsRef<Path>, texturename: impl AsRef<Path>) -> Polygo
         vertice_normals: verts_normals,
         uv_coords: uvs,
         triangles,
-        vertice_to_uv_idx: vertices_t,
+        // vertice_to_uv_idx: vertices_t,
         texture: ::image::io::Reader::open(texturename).unwrap().decode().unwrap(),
+        triangle_to_v_to_uv_idx: tex_per_vertex_per_triangle,
     }
 }
