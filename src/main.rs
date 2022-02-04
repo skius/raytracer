@@ -38,12 +38,14 @@ impl Into<Rgba<u8>> for RGBA {
 
 #[derive(Debug, Copy, Clone)]
 struct Vec2([f64; 2]);
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 struct Vec3([f64; 3]);
 #[derive(Debug, Copy, Clone)]
 struct Vec3H([f64; 4]);
 #[derive(Debug, Copy, Clone)]
 struct Mat3H([[f64; 4]; 4]);
+
+impl Eq for Vec3 {}
 
 impl Vec2 {
     fn length(&self) -> f64 {
@@ -240,7 +242,8 @@ fn intersects_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Op
     // Only testing positive bound, thus enabling backface culling
     // If backface culling is not desired write:
     // det < EPSILON && det > -EPSILON
-    if det < epsilon {
+    // if det < epsilon {
+    if det < epsilon && det > -epsilon {
         return None;
     }
 
@@ -296,10 +299,53 @@ fn interp_sky(dir: Vec3) -> [f64; 3] {
     res.0
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+fn reflect(v: Vec3, n: Vec3) -> Vec3 {
+    2.0 * v.dot(&n) * n - v
+}
+
+fn refract(uv: Vec3, n: Vec3, etai_over_etat: f64) -> Vec3 {
+    let uv = -1.0 * uv;
+
+    let cos_theta = (-1.0 * uv).dot(&n).min(1.0);
+    let r_out_perp = etai_over_etat * (uv + cos_theta * n);
+    let r_out_parallel = -((1.0 - r_out_perp.dot(&r_out_perp)).abs()).sqrt() * n;
+    r_out_perp + r_out_parallel
+}
+
+fn reflectance(cosine: f64, ref_idx: f64) -> f64 {
+    let r = (1.0 - ref_idx) / (1.0 + ref_idx);
+    let r2 = r * r;
+    r2 + (1.0 - r2) * (1.0 - cosine).powi(5)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Kind {
     Phong,
     Mirror,
+    Matte(Vec3),
+    Dielectric(f64),
+}
+
+impl Eq for Kind {}
+
+impl Kind {
+    fn diffuse(&self) -> f64 {
+        match self {
+            Kind::Phong => 0.0,
+            Kind::Mirror => 0.5,
+            Kind::Matte(_) => 0.05,
+            Kind::Dielectric(_) => 0.0,
+        }
+    }
+
+    fn num_samples(&self) -> usize {
+        match self {
+            Kind::Phong => 1,
+            Kind::Mirror => 1,
+            Kind::Matte(_) => 1,
+            Kind::Dielectric(_) => 1,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -312,7 +358,7 @@ struct Object {
 }
 
 impl Object {
-    fn from_mesh(p: PolygonMesh, obj_idx: usize) -> Object {
+    fn from_mesh(p: PolygonMesh, obj_idx: usize, kind: Kind) -> Object {
         let pre = Instant::now();
         let mut flat_triangles = Vec::new();
         for (idx, &Triangle([vi1, vi2, vi3])) in p.triangles.iter().enumerate() {
@@ -334,7 +380,7 @@ impl Object {
         dbg!(Instant::now().duration_since(pre));
         Object {
             polygon_mesh: p,
-            kind: Kind::Mirror,
+            kind: kind,
             // kind: Kind::Phong,
             flat_triangles,
             bvh: bvh,
@@ -348,7 +394,7 @@ impl Object {
 
         let hits = self.bvh.traverse(&ray, &self.flat_triangles);
 
-        let least = hits.par_iter().filter_map(|flat_tri| {
+        let least = hits.iter().filter_map(|flat_tri| {
             let v1 = flat_tri.vertices[0];
             let v2 = flat_tri.vertices[1];
             let v3 = flat_tri.vertices[2];
@@ -360,8 +406,8 @@ impl Object {
                 Some(t) => Some((t, flat_tri.triangle_idx)),
                 None => None,
             }
-            // }).fold(((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
-        }).reduce(|| ((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+        }).fold(((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+        // }).reduce(|| ((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
 
 
         if least.0.0 == f64::INFINITY {
@@ -374,176 +420,6 @@ impl Object {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-struct Hit {
-    distance: f64,
-    u: f64,
-    v: f64,
-    triangle_idx: usize,
-}
-
-impl Hit {
-    fn new(distance: f64, u: f64, v: f64, triangle_idx: usize) -> Hit {
-        Hit {
-            distance,
-            u,
-            v,
-            triangle_idx,
-        }
-    }
-}
-
-impl PartialEq for Hit {
-    fn eq(&self, other: &Self) -> bool {
-        self.distance == other.distance
-    }
-}
-
-impl Eq for Hit {}
-
-impl PartialOrd for Hit {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.distance.partial_cmp(&other.distance)
-    }
-}
-
-impl Ord for Hit {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.distance.partial_cmp(&other.distance).unwrap()
-    }
-}
-
-// fn ray_hit_mesh(origin: Vec3, dir: Vec3, mesh: &PolygonMesh) -> Option<Hit> {
-//     let mut closest_hit = Hit::new(f64::INFINITY, 0.0, 0.0, 0);
-//     for (triangle_idx, triangle) in mesh.triangles.iter().enumerate() {
-//         if let Some((dist, u, v)) = intersects_triangle(origin, dir, triangle.0, triangle.1, triangle.2) {
-//             if dist < closest_hit.distance {
-//                 closest_hit = Hit::new(dist, u, v, triangle_idx);
-//             }
-//         }
-//     }
-//     if closest_hit.distance < f64::INFINITY {
-//         Some(closest_hit)
-//     } else {
-//         None
-//     }
-// }
-
-fn bary_interp<T>(a: T, b: T, c: T, u: f64, v: f64) -> T
-where f64: Mul<T, Output = T>, T: Add<T, Output = T>
-{
-    (1.0 - u - v) * a + u * b + v * c
-}
-
-fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3] {
-    if depth >= 2 {
-        // println!("Depth {}", depth);
-    }
-
-    // Check if it hits an object
-    let mut closest_hit = Hit::new(f64::INFINITY, 0.0, 0.0, 0);
-    let mut closest_obj_idx = usize::MAX;
-    for (obj_idx, obj) in objects.into_iter().enumerate(){
-        let hit = obj.hit(origin, dir);
-        if let Some(hit) = hit {
-            if hit < closest_hit {
-                closest_hit = hit;
-                closest_obj_idx = obj_idx;
-            }
-        }
-    }
-
-    let light_pos = Vec3([5.0, 5.0, 0.0]);
-
-    if closest_obj_idx == usize::MAX {
-        return interp_sky(dir);
-    } else {
-        let obj = &objects[closest_obj_idx];
-        let hit = closest_hit;
-        let hit_pos = origin + hit.distance * dir;
-
-        let Triangle([vi1, vi2, vi3]) = obj.polygon_mesh.triangles[hit.triangle_idx];
-        let n1 = obj.polygon_mesh.vertice_normals[vi1];
-        let n2 = obj.polygon_mesh.vertice_normals[vi2];
-        let n3 = obj.polygon_mesh.vertice_normals[vi3];
-
-        let normal = bary_interp(n1, n2, n3, hit.u, hit.v);
-        // dbg!(normal);
-
-        let camera_dir = (-1.0 * dir).normalize();
-        let light_dir = (light_pos - hit_pos).normalize();
-
-        let (u1, v1) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.vertice_to_uv_idx[&vi1]];
-        let (u2, v2) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.vertice_to_uv_idx[&vi2]];
-        let (u3, v3) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.vertice_to_uv_idx[&vi3]];
-
-        let text_u = bary_interp(u1, u2, u3, hit.u, hit.v);
-        let text_v = bary_interp(v1, v2, v3, hit.u, hit.v);
-
-
-
-        // assert!((0.0..1.0).contains(&text_u));
-        // assert!((0.0..1.0).contains(&text_v));
-
-        if obj.kind == Kind::Phong {
-
-            // let light_dir = Vec3([1.0, -1.0, 1.0]).normalize();
-
-            let diffuse = normal.dot(&light_dir);
-            let diffuse = diffuse.max(0.0);
-
-            let ambient = 0.1;
-
-            let r = 2.0 * (light_dir.dot(&normal)) * normal - light_dir;
-            let specular = r.dot(&camera_dir).max(0.0).powf(10.0);
-
-            let text_width = obj.polygon_mesh.texture.width();
-            let text_height = obj.polygon_mesh.texture.height();
-            let text_x = (text_u * text_width as f64).floor() as u32;
-            let text_y = text_height - (text_v * text_height as f64).floor() as u32;
-            // dbg!((text_x, text_y));
-
-            let Rgba([r, g, b, a]) = obj.polygon_mesh.texture.get_pixel(text_x, text_y);
-
-            let r = r as f64 / 255.0;
-            let g = g as f64 / 255.0;
-            let b = b as f64 / 255.0;
-
-            return [(diffuse + ambient + specular) * r, (diffuse + ambient + specular) * g, (diffuse + ambient + specular) * b];
-        } else if obj.kind == Kind::Mirror {
-            let r = 2.0 * (camera_dir.dot(&normal)) * normal - camera_dir;
-            let orig = hit_pos;
-            let dir = r.normalize();
-            let [rr, rg, rb] = raytrace(orig, dir, objects, depth + 1);
-
-            let specular = r.dot(&light_dir).max(0.0).powf(20.0);
-            let specular = 0.0;
-
-            let text_width = obj.polygon_mesh.texture.width();
-            let text_height = obj.polygon_mesh.texture.height();
-            let text_x = (text_u * text_width as f64).floor() as u32;
-            let text_y = text_height - (text_v * text_height as f64).floor() as u32;
-            // dbg!((text_x, text_y));
-
-            if text_x >= text_width || text_x < 0 || text_y < 0 || text_y >= text_height {
-                println!("{} {}", text_x, text_y);
-            }
-
-            let Rgba([r, g, b, a]) = obj.polygon_mesh.texture.get_pixel(text_x, text_y);
-            let r = r as f64 / 255.0;
-            let g = g as f64 / 255.0;
-            let b = b as f64 / 255.0;
-
-            // let [r, g, b] = [1.0; 3];
-
-            return [rr * r + specular, rg * g + specular, rb * b + specular];
-            // return [rr * r * 0.8 + r * 0.1 + specular, rg * g * 0.8 + g * 0.1 + specular, rb * b * 0.8 + b * 0.1 + specular];
-            // return [rr * r * 0.8  + specular, rg * g * 0.8 + specular, rb * b * 0.8 + specular];
-        }
-    }
-
-    [0.0; 3]
-}
 
 #[derive(Debug, Clone)]
 struct PolygonMesh {
@@ -676,6 +552,350 @@ impl PolygonMesh {
     }
 }
 
+
+#[derive(Debug, Copy, Clone)]
+struct Hit {
+    distance: f64,
+    u: f64,
+    v: f64,
+    triangle_idx: usize,
+}
+
+impl Hit {
+    fn new(distance: f64, u: f64, v: f64, triangle_idx: usize) -> Hit {
+        Hit {
+            distance,
+            u,
+            v,
+            triangle_idx,
+        }
+    }
+}
+
+impl PartialEq for Hit {
+    fn eq(&self, other: &Self) -> bool {
+        self.distance == other.distance
+    }
+}
+
+impl Eq for Hit {}
+
+impl PartialOrd for Hit {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.distance.partial_cmp(&other.distance)
+    }
+}
+
+impl Ord for Hit {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.distance.partial_cmp(&other.distance).unwrap()
+    }
+}
+
+// fn ray_hit_mesh(origin: Vec3, dir: Vec3, mesh: &PolygonMesh) -> Option<Hit> {
+//     let mut closest_hit = Hit::new(f64::INFINITY, 0.0, 0.0, 0);
+//     for (triangle_idx, triangle) in mesh.triangles.iter().enumerate() {
+//         if let Some((dist, u, v)) = intersects_triangle(origin, dir, triangle.0, triangle.1, triangle.2) {
+//             if dist < closest_hit.distance {
+//                 closest_hit = Hit::new(dist, u, v, triangle_idx);
+//             }
+//         }
+//     }
+//     if closest_hit.distance < f64::INFINITY {
+//         Some(closest_hit)
+//     } else {
+//         None
+//     }
+// }
+
+fn bary_interp<T>(a: T, b: T, c: T, u: f64, v: f64) -> T
+where f64: Mul<T, Output = T>, T: Add<T, Output = T>
+{
+    (1.0 - u - v) * a + u * b + v * c
+}
+
+const MAX_DEPTH: i32 = 5;
+const NUM_SAMPLES_PER_PIXEL: i32 = 20;
+
+fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3] {
+    if depth >= 2 {
+        // println!("Depth {}", depth);
+    }
+
+    if depth > MAX_DEPTH {
+        return [0.0, 0.0, 0.0];
+    }
+
+    // Check if it hits an object
+    let mut closest_hit = Hit::new(f64::INFINITY, 0.0, 0.0, 0);
+    let mut closest_obj_idx = usize::MAX;
+    for (obj_idx, obj) in objects.into_iter().enumerate(){
+        let hit = obj.hit(origin, dir);
+        if let Some(hit) = hit {
+            if hit < closest_hit {
+                closest_hit = hit;
+                closest_obj_idx = obj_idx;
+            }
+        }
+    }
+
+    let light_pos = Vec3([5.0, 5.0, 0.0]);
+
+    if closest_obj_idx == usize::MAX {
+        return interp_sky(dir);
+    } else {
+        let obj = &objects[closest_obj_idx];
+        let hit = closest_hit;
+        let hit_pos = origin + hit.distance * dir;
+
+        let Triangle([vi1, vi2, vi3]) = obj.polygon_mesh.triangles[hit.triangle_idx];
+        let n1 = obj.polygon_mesh.vertice_normals[vi1];
+        let n2 = obj.polygon_mesh.vertice_normals[vi2];
+        let n3 = obj.polygon_mesh.vertice_normals[vi3];
+
+        let normal = bary_interp(n1, n2, n3, hit.u, hit.v);
+        // dbg!(normal);
+
+        let camera_dir = (-1.0 * dir).normalize();
+        let light_dir = (light_pos - hit_pos).normalize();
+
+        let (u1, v1) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.vertice_to_uv_idx[&vi1]];
+        let (u2, v2) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.vertice_to_uv_idx[&vi2]];
+        let (u3, v3) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.vertice_to_uv_idx[&vi3]];
+
+        let text_u = bary_interp(u1, u2, u3, hit.u, hit.v);
+        let text_v = bary_interp(v1, v2, v3, hit.u, hit.v);
+
+
+
+        // assert!((0.0..1.0).contains(&text_u));
+        // assert!((0.0..1.0).contains(&text_v));
+
+        match obj.kind {
+            Kind::Phong => {
+                // let light_dir = Vec3([1.0, -1.0, 1.0]).normalize();
+
+                let diffuse = normal.dot(&light_dir);
+                let diffuse = diffuse.max(0.0);
+
+                let ambient = 0.1;
+
+                let r = 2.0 * (light_dir.dot(&normal)) * normal - light_dir;
+                let specular = r.dot(&camera_dir).max(0.0).powf(10.0);
+
+                let text_width = obj.polygon_mesh.texture.width();
+                let text_height = obj.polygon_mesh.texture.height();
+                let text_x = (text_u * text_width as f64).floor() as u32;
+                // let text_y = text_height - ((text_v) * text_height as f64).floor() as u32;
+                let text_y = ((1.0 - text_v) * text_height as f64).floor() as u32;
+                // dbg!((text_x, text_y));
+
+                let Rgba([r, g, b, a]) = obj.polygon_mesh.texture.get_pixel(text_x, text_y);
+
+                let r = r as f64 / 255.0;
+                let g = g as f64 / 255.0;
+                let b = b as f64 / 255.0;
+
+                return [(diffuse + ambient + specular) * r, (diffuse + ambient + specular) * g, (diffuse + ambient + specular) * b];
+            },
+            Kind::Mirror | Kind::Matte(_) => {
+                // if is backface, set out dir to normal
+                let r = if camera_dir.dot(&normal) < 0.0 {
+                    -1.0 * camera_dir
+                } else {
+                    2.0 * (camera_dir.dot(&normal)) * normal - camera_dir
+                };
+                let orig = hit_pos;
+                let mut dir = r.normalize();
+
+                let mut rng = rand::thread_rng();
+
+                let mut reflected_r = 0.0;
+                let mut reflected_g = 0.0;
+                let mut reflected_b = 0.0;
+
+                let num_samples = obj.kind.num_samples();
+                let diffuse = obj.kind.diffuse();
+
+                for _ in 0..num_samples {
+                    let x = rng.gen_range(-diffuse..=diffuse);
+                    let y = rng.gen_range(-diffuse..=diffuse);
+                    let z = rng.gen_range(-diffuse..=diffuse);
+
+                    // this is fuzzy reflection
+                    let fuzzy_out = (Vec3([x, y, z]) + dir).normalize();
+                    // this is randomly scattered
+                    let diffuse_out = (Vec3([x, y, z]) + normal).normalize();
+
+                    let new_dir = if obj.idx == 2 {
+                        fuzzy_out
+                    } else {
+                        diffuse_out
+                    };
+
+                    // Against shadow acne
+                    let orig = orig + 0.001 * new_dir;
+
+                    let [rr_, rg_, rb_] = raytrace(orig, new_dir, objects, depth + 1);
+                    reflected_r += rr_;
+                    reflected_g += rg_;
+                    reflected_b += rb_;
+                }
+
+                reflected_r /= num_samples as f64;
+                reflected_g /= num_samples as f64;
+                reflected_b /= num_samples as f64;
+
+                let [point_r, point_g, point_b] = match obj.kind {
+                    Kind::Mirror => {
+                        let text_width = obj.polygon_mesh.texture.width();
+                        let text_height = obj.polygon_mesh.texture.height();
+                        let text_x = (text_u * text_width as f64).floor() as u32;
+                        let text_y = text_height - (text_v * text_height as f64).floor() as u32;
+                        // dbg!((text_x, text_y));
+
+                        if text_x >= text_width || text_x < 0 || text_y < 0 || text_y >= text_height {
+                            println!("{} {}", text_x, text_y);
+                        }
+
+                        let Rgba([r, g, b, a]) = obj.polygon_mesh.texture.get_pixel(text_x, text_y);
+                        let r = r as f64 / 255.0;
+                        let g = g as f64 / 255.0;
+                        let b = b as f64 / 255.0;
+                        [r, g, b]
+                    }
+                    Kind::Matte(Vec3(c)) => {
+                        c
+                    }
+                    _ => unreachable!()
+                };
+
+                let material_loss = 0.0;
+
+                let light_emission = if obj.idx == 100 {
+                    [0.2, 0.0, 0.0]
+                } else {
+                    [0.0; 3]
+                };
+
+                return [
+                    reflected_r * point_r * (1.0 - material_loss) + light_emission[0],
+                    reflected_g * point_g * (1.0 - material_loss) + light_emission[1],
+                    reflected_b * point_b * (1.0 - material_loss) + light_emission[2],
+                ];
+            },
+            Kind::Dielectric(index_of_refraction) => {
+                let front_face = normal.dot(&camera_dir) > 0.0;
+
+                let normal = if front_face {
+                    normal
+                } else {
+                    -1.0 * normal
+                };
+
+                let eta = if front_face {
+                    1.0 / index_of_refraction
+                } else {
+                    index_of_refraction
+                };
+
+                let cos_theta = camera_dir.dot(&normal).min(1.0);
+                let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+
+                let cannot_refract = eta * sin_theta > 1.0;
+
+                // let dir = if cannot_refract || reflectance(cos_theta, eta) > rand::thread_rng().gen::<f64>() {
+                let dir = if cannot_refract {
+                    let r = 2.0 * (camera_dir.dot(&normal)) * normal - camera_dir;
+                    let dir = r.normalize();
+                    dir
+                } else {
+                    refract(camera_dir, normal, index_of_refraction).normalize()
+                };
+
+
+                let [rr_, rg_, rb_] = raytrace(hit_pos + 0.001 * dir, dir, objects, depth + 1);
+
+                return [rr_, rg_, rb_];
+
+            }
+            // Kind::Mirror => {
+            //     let r = 2.0 * (camera_dir.dot(&normal)) * normal - camera_dir;
+            //     let orig = hit_pos;
+            //     let dir = r.normalize();
+            //     let [rr, rg, rb] = raytrace(orig, dir, objects, depth + 1);
+            //
+            //     let text_width = obj.polygon_mesh.texture.width();
+            //     let text_height = obj.polygon_mesh.texture.height();
+            //     let text_x = (text_u * text_width as f64).floor() as u32;
+            //     let text_y = text_height - (text_v * text_height as f64).floor() as u32;
+            //     // dbg!((text_x, text_y));
+            //
+            //     if text_x >= text_width || text_x < 0 || text_y < 0 || text_y >= text_height {
+            //         println!("{} {}", text_x, text_y);
+            //     }
+            //
+            //     let Rgba([r, g, b, a]) = obj.polygon_mesh.texture.get_pixel(text_x, text_y);
+            //     let r = r as f64 / 255.0;
+            //     let g = g as f64 / 255.0;
+            //     let b = b as f64 / 255.0;
+            //
+            //     // let [r, g, b] = [1.0; 3];
+            //
+            //     return [rr * r, rg * g, rb * b];
+            //     // return [rr * r * 0.8 + r * 0.1 + specular, rg * g * 0.8 + g * 0.1 + specular, rb * b * 0.8 + b * 0.1 + specular];
+            //     // return [rr * r * 0.8  + specular, rg * g * 0.8 + specular, rb * b * 0.8 + specular];
+            // },
+            // Kind::Matte(color) => {
+            //     // let diffuse = normal.dot(&light_dir);
+            //     // let diffuse = diffuse.max(0.0);
+            //     //
+            //     // let ambient = 0.3;
+            //     //
+            //     // let r = 2.0 * (light_dir.dot(&normal)) * normal - light_dir;
+            //     // let specular = r.dot(&camera_dir).max(0.0).powf(0.5);
+            //     // let specular = 0.0;
+            //     // return [(diffuse + ambient + specular) * r, (diffuse + ambient + specular) * g, (diffuse + ambient + specular) * b];
+            //
+            //     let r = 2.0 * (camera_dir.dot(&normal)) * normal - camera_dir;
+            //     let orig = hit_pos;
+            //     let dir = r.normalize();
+            //
+            //     let mut rng = rand::thread_rng();
+            //
+            //     const NUM_SAMPLES: u32 = 10;
+            //
+            //     let mut rr = 0.0;
+            //     let mut rg = 0.0;
+            //     let mut rb = 0.0;
+            //
+            //     for _ in 0..NUM_SAMPLES {
+            //         let x = rng.gen_range(-0.3..0.3);
+            //         let y = rng.gen_range(-0.3..0.3);
+            //         let z = rng.gen_range(-0.3..0.3);
+            //
+            //         let new_dir = (Vec3([x, y, z]) + dir).normalize();
+            //
+            //         let [rr_, rg_, rb_] = raytrace(orig, new_dir, objects, depth + 1);
+            //         rr += rr_;
+            //         rg += rg_;
+            //         rb += rb_;
+            //     }
+            //
+            //     rr /= NUM_SAMPLES as f64;
+            //     rg /= NUM_SAMPLES as f64;
+            //     rb /= NUM_SAMPLES as f64;
+            //
+            //     let Vec3([r, g, b]) = color;
+            //
+            //     return [rr * r * 0.8, rg * g * 0.8, rb * b * 0.8];
+            // }
+        }
+    }
+
+    [0.0; 3]
+}
+
 fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, objects: &[Object]) {
     let fov_y = 60.0 * std::f64::consts::PI / 180.0;
     let aspect_ratio = width as f64 / height as f64;
@@ -694,9 +914,24 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
         let orig = Vec3([0.0, 0.0, 0.0]);
         let dir = Vec3([p_x, p_y, -1.0]).normalize();
 
-        let [red, green, blue] = raytrace(orig, dir, objects, 0);
+        let mut total_r = 0.0;
+        let mut total_g = 0.0;
+        let mut total_b = 0.0;
+
+        (0..NUM_SAMPLES_PER_PIXEL).into_par_iter().map(|_| {
+            raytrace(orig, dir, objects, 0)
+        }).collect::<Vec<_>>().into_iter().for_each(|[r, g, b]| {
+            total_r += r;
+            total_g += g;
+            total_b += b;
+        });
+
+        // let [red, green, blue] = raytrace(orig, dir, objects, 0);
 
 
+        let red = total_r / NUM_SAMPLES_PER_PIXEL as f64;
+        let green = total_g / NUM_SAMPLES_PER_PIXEL as f64;
+        let blue = total_b / NUM_SAMPLES_PER_PIXEL as f64;
 
         let rgba = RGBA::new(red, green, blue, 1.0);
         ((u,v), rgba.into())
@@ -728,7 +963,8 @@ fn main() {
 
     let mut canvas = ImageBuffer::new(width, height);
 
-    let spot_poly = load_obj("spot_triangulated.obj", "spot_texture.png");
+    let spot_poly = load_obj("spot_triangulated.obj", "spot_texture_2.png");
+    let triangle_poly = load_obj("triangle_floor.obj", "spot_texture.png");
 
     let mut texture_context = window.create_texture_context();
 
@@ -770,7 +1006,8 @@ fn main() {
             phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
             // phong.rotate_y((150.0) * std::f64::consts::PI / 180.0);
             phong.translate(Vec3([-1.0, 0.0, -2.5]));
-            let obj = Object::from_mesh(phong, objects.len());
+            // let obj = Object::from_mesh(phong, objects.len(), Kind::Dielectric(1.5));
+            let obj = Object::from_mesh(phong, objects.len(), Kind::Mirror);
             objects.push(obj);
 
             // let pre = Instant::now();
@@ -804,7 +1041,7 @@ fn main() {
             let mut mirror = spot_poly.clone();
             mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
             mirror.translate(Vec3([1.0, 0.0, -2.5]));
-            let obj = Object::from_mesh(mirror, objects.len());
+            let obj = Object::from_mesh(mirror, objects.len(), Kind::Mirror);
             objects.push(obj);
 
             // let pre = Instant::now();
@@ -835,9 +1072,15 @@ fn main() {
             //     idx: objects.len(),
             // });
 
+            let floor = triangle_poly.clone();
+            let obj = Object::from_mesh(floor, objects.len(), Kind::Matte(Vec3([0.7, 0.7, 0.7])));
+            objects.push(obj);
+
             dbg!(Instant::now().duration_since(start));
             let pre = Instant::now();
-            render::<width, height>(&mut canvas, &objects);
+            // if Instant::now().duration_since(start) < Duration::from_secs(10) {
+                render::<width, height>(&mut canvas, &objects);
+            // }
             dbg!(Instant::now().duration_since(pre));
             dbg!(Instant::now().duration_since(start));
 
@@ -884,9 +1127,11 @@ fn load_obj(filename: impl AsRef<Path>, texturename: impl AsRef<Path>) -> Polygo
                 let vi2 = f[1][0] - 1;
                 let vi3 = f[2][0] - 1;
 
-                let uv1 = f[0][1] - 1;
-                let uv2 = f[1][1] - 1;
-                let uv3 = f[2][1] - 1;
+                let (uv1, uv2, uv3) = if f[0].len() < 2 {
+                    (0, 0, 0)
+                } else {
+                    (f[0][1] - 1, f[1][1] - 1, f[2][1] - 1)
+                };
 
                 triangles.push(Triangle([vi1, vi2, vi3]));
 
@@ -905,6 +1150,8 @@ fn load_obj(filename: impl AsRef<Path>, texturename: impl AsRef<Path>) -> Polygo
             _ => (),
         }
     }
+
+    uvs.push((0.0, 1.0));
 
     let mut verts_n = vec![Vec::new(); vertices.len()];
 
