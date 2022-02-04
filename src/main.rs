@@ -276,8 +276,24 @@ fn intersects_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Op
     }
 }
 
-fn interp_sky(t: f64) -> [f64; 3] {
-    [0.5 * (1.0 - t) + 1.0 * t, 0.7 * (1.0 - t) + 1.0 * t, 1.0 * (1.0 - t) + 1.0 * t]
+fn interp_sky(dir: Vec3) -> [f64; 3] {
+    let r1 = 0.5;
+    let r2 = 1.0;
+
+    let g1 = 0.7;
+    let g2 = 1.0;
+
+    let b1 = 1.0;
+    let b2 = 1.0;
+
+    let t = dir.0[1];
+
+    let mut res = (1.0 - t) * Vec3([r1, g1, b1]) + t * Vec3([r2, g2, b2]);
+
+    // let light_dir = Vec3([1.0, 1.0, 1.0]).normalize();
+    // res = (dir.dot(&light_dir) + 1.0)/2.0 * res;
+
+    res.0
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -296,6 +312,36 @@ struct Object {
 }
 
 impl Object {
+    fn from_mesh(p: PolygonMesh, obj_idx: usize) -> Object {
+        let pre = Instant::now();
+        let mut flat_triangles = Vec::new();
+        for (idx, &Triangle([vi1, vi2, vi3])) in p.triangles.iter().enumerate() {
+            let v1 = p.vertices[vi1];
+            let v2 = p.vertices[vi2];
+            let v3 = p.vertices[vi3];
+
+            let flat_tri = FlatTriangle {
+                vertices: [v1, v2, v3],
+                node_index: 0,
+                triangle_idx: idx,
+                obj_idx: obj_idx,
+            };
+            flat_triangles.push(flat_tri);
+        }
+        dbg!(Instant::now().duration_since(pre));
+        let pre = Instant::now();
+        let bvh = BVH::build(&mut flat_triangles);
+        dbg!(Instant::now().duration_since(pre));
+        Object {
+            polygon_mesh: p,
+            kind: Kind::Mirror,
+            // kind: Kind::Phong,
+            flat_triangles,
+            bvh: bvh,
+            idx: obj_idx,
+        }
+    }
+
     fn hit(&self, origin: Vec3, dir: Vec3) -> Option<Hit> {
         let ray = Ray::new(Point3::new(origin.0[0] as f32, origin.0[1] as f32, origin.0[2] as f32),
                            Vector3::new(dir.0[0] as f32, dir.0[1] as f32, dir.0[2] as f32));
@@ -410,7 +456,7 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
     let light_pos = Vec3([5.0, 5.0, 0.0]);
 
     if closest_obj_idx == usize::MAX {
-        return interp_sky(dir.0[1]);
+        return interp_sky(dir);
     } else {
         let obj = &objects[closest_obj_idx];
         let hit = closest_hit;
@@ -433,6 +479,11 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
 
         let text_u = bary_interp(u1, u2, u3, hit.u, hit.v);
         let text_v = bary_interp(v1, v2, v3, hit.u, hit.v);
+
+
+
+        // assert!((0.0..1.0).contains(&text_u));
+        // assert!((0.0..1.0).contains(&text_v));
 
         if obj.kind == Kind::Phong {
 
@@ -473,6 +524,10 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
             let text_x = (text_u * text_width as f64).floor() as u32;
             let text_y = text_height - (text_v * text_height as f64).floor() as u32;
             // dbg!((text_x, text_y));
+
+            if text_x >= text_width || text_x < 0 || text_y < 0 || text_y >= text_height {
+                println!("{} {}", text_x, text_y);
+            }
 
             let Rgba([r, g, b, a]) = obj.polygon_mesh.texture.get_pixel(text_x, text_y);
             let r = r as f64 / 255.0;
@@ -625,32 +680,36 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
     let fov_y = 60.0 * std::f64::consts::PI / 180.0;
     let aspect_ratio = width as f64 / height as f64;
 
+    let mut coords = Vec::new();
     for u in 0..width {
-        // println!("Processing pixel column ({u},...)");
-
         for v in 0..height {
-
-            // println!("Processing coord ({},{})", u, v);
-
-            let p_x = (2.0 * ((u as f64 + 0.5) / width as f64) - 1.0) * (fov_y / 2.0).tan() * aspect_ratio;
-            let p_y = (1.0 - 2.0 * ((v as f64 + 0.5) / height as f64)) * (fov_y / 2.0).tan();
-
-            let orig = Vec3([0.0, 0.0, 0.0]);
-            let dir = Vec3([p_x, p_y, -1.0]).normalize();
-
-            let [red, green, blue] = raytrace(orig, dir, objects, 0);
-
-
-
-            let rgba = RGBA::new(red, green, blue, 1.0);
-            canvas.put_pixel(u, v, rgba.into());
+            coords.push((u, v));
         }
     }
+
+    coords.into_par_iter().map(|(u, v)| {
+        let p_x = (2.0 * ((u as f64 + 0.5) / width as f64) - 1.0) * (fov_y / 2.0).tan() * aspect_ratio;
+        let p_y = (1.0 - 2.0 * ((v as f64 + 0.5) / height as f64)) * (fov_y / 2.0).tan();
+
+        let orig = Vec3([0.0, 0.0, 0.0]);
+        let dir = Vec3([p_x, p_y, -1.0]).normalize();
+
+        let [red, green, blue] = raytrace(orig, dir, objects, 0);
+
+
+
+        let rgba = RGBA::new(red, green, blue, 1.0);
+        ((u,v), rgba.into())
+    }).collect::<Vec<_>>().into_iter().for_each(|((u, v), rgba)| {
+        canvas.put_pixel(u, v, rgba);
+    });
 }
 
 fn main() {
-    const width: u32 = 160;
-    const height: u32 = 120;
+    const scale: u32 = 4;
+
+    const width: u32 = scale * 160;
+    const height: u32 = scale * 120;
     // const width: u32 = 9*160;
     // const height: u32 = 9*120;
 
@@ -682,8 +741,13 @@ fn main() {
     let mut t = 0.0;
 
     while let Some(e) = window.next() {
-        // println!("{:?}", e);
+        println!("{:?}", e);
+        if let Some(ue) = e.update_args() {
+            t += ue.dt;
+        }
+
         if let Some(re) = e.render_args() {
+
             // println!("{:?}", canvas.get_pixel(1,1));
             // canvas.put_pixel(1,1,RGBA::new(1.0, 0.0, 0.0, 1.0).into());
             // canvas.put_pixel(1,1,Rgba([255, 0, 0, 255]));
@@ -696,70 +760,85 @@ fn main() {
 
             dbg!(Instant::now().duration_since(start));
             dbg!(re.ext_dt);
-            t += re.ext_dt;
+            // t += re.ext_dt;
 
             let mut objects = Vec::new();
             let mut phong = spot_poly.clone();
             // phong.rotate_z(80.0 * (t * 1250.0).sin() * std::f64::consts::PI / 180.0);
             // phong.rotate_x(t * 10000.0 * std::f64::consts::PI / 180.0);
             // phong.rotate_x(40.0 * (t * 2500.0).cos() * std::f64::consts::PI / 180.0);
-            phong.rotate_y((150.0 + t*10000.0) * std::f64::consts::PI / 180.0);
+            phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
             // phong.rotate_y((150.0) * std::f64::consts::PI / 180.0);
             phong.translate(Vec3([-1.0, 0.0, -2.5]));
-            let mut flat_triangles = Vec::new();
-            for (idx, &Triangle([vi1, vi2, vi3])) in phong.triangles.iter().enumerate() {
-                let v1 = phong.vertices[vi1];
-                let v2 = phong.vertices[vi2];
-                let v3 = phong.vertices[vi3];
+            let obj = Object::from_mesh(phong, objects.len());
+            objects.push(obj);
 
-                let flat_tri = FlatTriangle {
-                    vertices: [v1, v2, v3],
-                    node_index: 0,
-                    triangle_idx: idx,
-                    obj_idx: objects.len(),
-                };
-                flat_triangles.push(flat_tri);
-            }
-            let bvh = BVH::build(&mut flat_triangles);
-            objects.push(Object {
-                polygon_mesh: phong,
-                kind: Kind::Mirror,
-                // kind: Kind::Phong,
-                flat_triangles,
-                bvh: bvh,
-                idx: objects.len(),
-            });
-
+            // let pre = Instant::now();
+            // let mut flat_triangles = Vec::new();
+            // for (idx, &Triangle([vi1, vi2, vi3])) in phong.triangles.iter().enumerate() {
+            //     let v1 = phong.vertices[vi1];
+            //     let v2 = phong.vertices[vi2];
+            //     let v3 = phong.vertices[vi3];
+            //
+            //     let flat_tri = FlatTriangle {
+            //         vertices: [v1, v2, v3],
+            //         node_index: 0,
+            //         triangle_idx: idx,
+            //         obj_idx: objects.len(),
+            //     };
+            //     flat_triangles.push(flat_tri);
+            // }
+            // dbg!(Instant::now().duration_since(pre));
+            // let pre = Instant::now();
+            // let bvh = BVH::build(&mut flat_triangles);
+            // dbg!(Instant::now().duration_since(pre));
+            // objects.push(Object {
+            //     polygon_mesh: phong,
+            //     kind: Kind::Mirror,
+            //     // kind: Kind::Phong,
+            //     flat_triangles,
+            //     bvh: bvh,
+            //     idx: objects.len(),
+            // });
 
             let mut mirror = spot_poly.clone();
             mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
             mirror.translate(Vec3([1.0, 0.0, -2.5]));
-            let mut flat_triangles = Vec::new();
-            for (idx, &Triangle([vi1, vi2, vi3])) in mirror.triangles.iter().enumerate() {
-                let v1 = mirror.vertices[vi1];
-                let v2 = mirror.vertices[vi2];
-                let v3 = mirror.vertices[vi3];
+            let obj = Object::from_mesh(mirror, objects.len());
+            objects.push(obj);
 
-                let flat_tri = FlatTriangle {
-                    vertices: [v1, v2, v3],
-                    node_index: 0,
-                    triangle_idx: idx,
-                    obj_idx: objects.len(),
-                };
-                flat_triangles.push(flat_tri);
-            }
-            let bvh = BVH::build(&mut flat_triangles);
-            objects.push(Object {
-                polygon_mesh: mirror,
-                // kind: Kind::Phong,
-                kind: Kind::Mirror,
-                flat_triangles,
-                bvh,
-                idx: objects.len(),
-            });
+            // let pre = Instant::now();
+            // let mut flat_triangles = Vec::new();
+            // for (idx, &Triangle([vi1, vi2, vi3])) in mirror.triangles.iter().enumerate() {
+            //     let v1 = mirror.vertices[vi1];
+            //     let v2 = mirror.vertices[vi2];
+            //     let v3 = mirror.vertices[vi3];
+            //
+            //     let flat_tri = FlatTriangle {
+            //         vertices: [v1, v2, v3],
+            //         node_index: 0,
+            //         triangle_idx: idx,
+            //         obj_idx: objects.len(),
+            //     };
+            //     flat_triangles.push(flat_tri);
+            // }
+            // dbg!(Instant::now().duration_since(pre));
+            // let pre = Instant::now();
+            // let bvh = BVH::build(&mut flat_triangles);
+            // dbg!(Instant::now().duration_since(pre));
+            // objects.push(Object {
+            //     polygon_mesh: mirror,
+            //     // kind: Kind::Phong,
+            //     kind: Kind::Mirror,
+            //     flat_triangles,
+            //     bvh,
+            //     idx: objects.len(),
+            // });
 
             dbg!(Instant::now().duration_since(start));
+            let pre = Instant::now();
             render::<width, height>(&mut canvas, &objects);
+            dbg!(Instant::now().duration_since(pre));
             dbg!(Instant::now().duration_since(start));
 
 
