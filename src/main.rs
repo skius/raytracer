@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::ops::{Add, Mul, Sub};
@@ -20,10 +21,10 @@ impl RGBA {
 impl Into<Rgba<u8>> for RGBA {
     fn into(self) -> Rgba<u8> {
         Rgba([
-            (self.0[0] * 255.0) as u8,
-            (self.0[1] * 255.0) as u8,
-            (self.0[2] * 255.0) as u8,
-            (self.0[3] * 255.0) as u8,
+            (self.0[0] * 255.0).clamp(0.0, 255.0) as u8,
+            (self.0[1] * 255.0).clamp(0.0, 255.0) as u8,
+            (self.0[2] * 255.0).clamp(0.0, 255.0) as u8,
+            (self.0[3] * 255.0).clamp(0.0, 255.0) as u8,
         ])
     }
 }
@@ -194,8 +195,8 @@ fn ray_triangle_intersect(orig: Vec3, dir: Vec3, (v0, v1, v2): (Vec3, Vec3, Vec3
 }
 
 fn intersects_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<(f64, f64, f64)> {
-    let a_to_b = c - a;
-    let a_to_c = b - a;
+    let a_to_b = b - a;
+    let a_to_c = c - a;
 
     // Begin calculating determinant - also used to calculate u parameter
     // u_vec lies in view plane
@@ -249,7 +250,7 @@ fn intersects_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Op
 fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) {
     let cam_pos = Vec3([0.0, 0.0, 0.0]);
 
-    let fov_y = 80.0 * std::f64::consts::PI / 180.0;
+    let fov_y = 60.0 * std::f64::consts::PI / 180.0;
     let aspect_ratio = width as f64 / height as f64;
     let h = 2.0 * (fov_y / 2.0).tan();
     let f = (fov_y / 2.0).tan().recip();
@@ -257,12 +258,6 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
     let z_near = 0.1;
     let z_far = 5.0;
 
-    let mut projection = Mat3H([[0.0; 4]; 4]);
-    projection.0[0][0] = f / aspect_ratio;
-    projection.0[1][1] = f;
-    projection.0[2][2] = (z_far + z_near) / (z_near - z_far);
-    projection.0[3][2] = -1.0;
-    projection.0[2][3] = (2.0 * z_far * z_near) / (z_near - z_far);
 
     let mut rotate180y = Mat3H([[0.0; 4]; 4]);
     rotate180y.0[0][0] = -1.0;
@@ -273,55 +268,24 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
     let rotate180y = Mat3H::rot_y(150.0 * std::f64::consts::PI / 180.0);
 
 
-    dbg!(projection);
+    // dbg!(projection);
 
-    // // confusing, because radius gets projected into non-uniform radius. instead, let's focus on vertices
-    // let ball_center = Vec3([0.0, 0.0, -50.0]).to_homogeneous();
-    // let ball_radius = 13.5;
-    // let on_ball_border = Vec3([0.0, ball_radius, -50.0]).to_homogeneous();
-    //
-    // // let outside = Vec3([0.0, 49.0, -50.0]).to_homogeneous();
-    //
-    // let p_ball_center = projection * ball_center;
-    // dbg!(p_ball_center);
-    // let p_ball_center = p_ball_center.homogeneous_divide();
-    //
-    // let p_on_ball_border = projection * on_ball_border;
-    // let p_on_ball_border = p_on_ball_border.homogeneous_divide();
-    //
-    // let projected_radius = (p_ball_center - p_on_ball_border).length();
-    // dbg!(projected_radius);
-    //
-    // dbg!(p_ball_center);
-    //
-    // // dbg!((projection * outside).homogeneous_divide());
 
-    // let v1 = Vec3([-2.0f64.sqrt()/2.0, -2.0f64.sqrt()/2.0, -5.0]).to_homogeneous();
-    // let v2 = Vec3([2.0f64.sqrt()/2.0, -2.0f64.sqrt()/2.0, -5.0]).to_homogeneous();
-    // let v3 = Vec3([0.0, 1.0, -5.0]).to_homogeneous();
-
-    // let v1 = Vec3([-20.0, 25.0, -60.0]).to_homogeneous();
-    // let v2 = Vec3([20.0, 25.0, -60.0]).to_homogeneous();
-    // let v3 = Vec3([0.0, 10.0, -90.0]).to_homogeneous();
-    //
-    // let v4 = Vec3([0.0, -1.0, -1.5]).to_homogeneous();
-    //
-    //
-    let light_pos = Vec3([2.0, 3.0, -0.5]).to_homogeneous();
-    let light_pos = Vec3([0.0, 0.0, -0.5]).to_homogeneous();
+    let light_pos = Vec3([2.0, 3.0, 2.5]).to_homogeneous();
+    let light_pos = Vec3([5.0, 5.0, 0.0]).to_homogeneous();
     //
     // let v1_p = (projection * v1).homogeneous_divide();
     // let v2_p = (projection * v2).homogeneous_divide();
     // let v3_p = (projection * v3).homogeneous_divide();
     // let v4_p = (projection * v4).homogeneous_divide();
-    let light_pos_p = (projection * light_pos).homogeneous_divide();
+    // let light_pos_p = (projection * light_pos).homogeneous_divide();
     //
     // dbg!(v1_p);
     // dbg!(v2_p);
     // dbg!(v3_p);
     // dbg!(v4_p);
 
-    let (mut verts, mut triangles) = load_obj("spot_triangulated.obj");
+    let (mut verts, mut verts_n, mut uvs, mut triangles, mut verts_to_uv_idx) = load_obj("spot_triangulated.obj");
     // dbg!(&verts);
     // dbg!(triangles);
 
@@ -337,7 +301,13 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
     let mut verts_p = verts.clone().into_iter().map(|v| {
         let rotated = (rotate180y * v.to_homogeneous()).homogeneous_divide();
 
-        (projection * (rotated - Vec3([0.0, 0.0, 1.5])).to_homogeneous()).homogeneous_divide()
+        rotated - Vec3([0.0, 0.0, 2.5])
+    }).collect::<Vec<_>>();
+
+    let verts_n = verts_n.into_iter().map(|v| {
+        let rotated = (rotate180y * v.to_homogeneous()).homogeneous_divide();
+
+        rotated
     }).collect::<Vec<_>>();
 
     for v in &verts_p {
@@ -351,12 +321,14 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
     }
     println!("");
 
-    dbg!(light_pos_p);
+    // dbg!(light_pos_p);
 
 
     let mut rng = rand::thread_rng();
 
-    // let text = ::image::io::Reader::open("text.png").unwrap().decode().unwrap();
+    let text = ::image::io::Reader::open("spot_texture.png").unwrap().decode().unwrap();
+    let text_width = text.width() as usize;
+    let text_height = text.height() as usize;
 
     // for triangle in &triangles {
     //
@@ -369,16 +341,12 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
 
             println!("Processing coord ({},{})", u, v);
 
-            let u_f = 2.0 * (u) as f64 / width as f64 - 1.0;
-            // let u_f = 2.0 * (u as f64 + rng.gen::<f64>()) / width as f64 - 1.0;
-            let v_f = 2.0 * (height - v) as f64 / height as f64 - 1.0;
-            // let v_f = 2.0 * ((height - v) as f64 + rng.gen::<f64>()) / height as f64 - 1.0;
 
-            let screen_vec = Vec2([u_f, v_f]);
-            // let ball_center = Vec2([p_ball_center.0[0], p_ball_center.0[1]]);
+            let p_x = (2.0 * ((u as f64 + 0.5) / width as f64) - 1.0) * (fov_y / 2.0).tan() * aspect_ratio;
+            let p_y = (1.0 - 2.0 * ((v as f64 + 0.5) / height as f64)) * (fov_y / 2.0).tan();
 
-            let orig = Vec3([u_f, v_f, -1.0]);
-            let dir = Vec3([0.0, 0.0, 1.0]);
+            let orig = Vec3([0.0, 0.0, 0.0]);
+            let dir = Vec3([p_x, p_y, -1.0]).normalize();
 
             // for &Triangle([vi1, vi2, vi3]) in &triangles {
             //     let v1 = verts_p[vi1];
@@ -404,23 +372,34 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
             let least = if least.0.0 == f64::INFINITY { None } else { Some(least) };
 
             let [red, green, blue] = if let Some(((t, u, v), triangle_idx)) = least {
-                dbg!(t);
+                // dbg!(t);
 
                 // now check illumination of hit point
                 let triangle = triangles[triangle_idx];
-                let v1 = verts[triangle.0[0]];
-                let v2 = verts[triangle.0[1]];
-                let v3 = verts[triangle.0[2]];
+                let v1 = verts_p[triangle.0[0]];
+                let v2 = verts_p[triangle.0[1]];
+                let v3 = verts_p[triangle.0[2]];
+
+                let Triangle([vi1, vi2, vi3]) = triangle;
 
                 let hit_point = orig + t * dir;
-                let normal = 1.0 * (v3 - v1).cross(&(v2 - v1)).normalize();
-                dbg!(normal);
-                let camera_dir = ( dir).normalize();
-                // let light_dir = (light_pos_p - hit_point).normalize();
-                let light_dir = Vec3([1.0, -1.0, 1.0]).normalize();
+                // let normal = 1.0 * (v2 - v1).cross(&(v3 - v1)).normalize();
+
+                let normal = (1.0 - u - v) * verts_n[vi1] + u * verts_n[vi2] + v * verts_n[vi3];
+
+                // dbg!(verts_n[vi1]);
+                // dbg!(verts_n[vi2]);
+                // dbg!(verts_n[vi3]);
+                // dbg!(u);
+                // dbg!(v);
+                //
+                // dbg!(normal);
+                let camera_dir = (-1.0 * dir).normalize();
+                let light_dir = (light_pos.homogeneous_divide() - hit_point).normalize();
+                // let light_dir = Vec3([1.0, -1.0, 1.0]).normalize();
 
                 let diffuse = normal.dot(&light_dir);
-                dbg!(diffuse);
+                // dbg!(diffuse);
                 let diffuse = diffuse.max(0.0);
 
                 let ambient = 0.1;
@@ -428,66 +407,29 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
                 let r = 2.0 * (light_dir.dot(&normal)) * normal - light_dir;
                 let specular = r.dot(&camera_dir).max(0.0).powf(10.0);
 
-                [1.0 * diffuse + ambient + specular, specular, specular]
+                let (u1, v1) = uvs[verts_to_uv_idx[&vi1]];
+                let (u2, v2) = uvs[verts_to_uv_idx[&vi2]];
+                let (u3, v3) = uvs[verts_to_uv_idx[&vi3]];
+
+                let text_u = (1.0 - u - v) * u1 + u * u2 + v * u3;
+                let text_v = (1.0 - u - v) * v1 + u * v2 + v * v3;
+
+                let text_x = (text_u * text_width as f64).floor() as usize;
+                let text_y = text_height - (text_v * text_height as f64).floor() as usize;
+                dbg!((text_x, text_y));
+
+                let Rgba([r, g, b, a]) = text.get_pixel(text_x as u32, text_y as u32);
+
+                let r = r as f64 / 255.0;
+                let g = g as f64 / 255.0;
+                let b = b as f64 / 255.0;
+
+                [(diffuse + ambient + specular) * r, (diffuse + ambient + specular) * g, (diffuse + ambient + specular) * b]
                 // [1.0 * diffuse + ambient, 0.0, 0.0]
                 // 2.0 - t
             } else {
                 [0.0; 3]
             };
-
-            // let red = if let Some((t, triangle_idx)) = least {
-            //
-            //     // now check illumination of hit point
-            //     let triangle = triangles[triangle_idx];
-            //     let v1 = verts_p[triangle.0[0]];
-            //     let v2 = verts_p[triangle.0[1]];
-            //     let v3 = verts_p[triangle.0[2]];
-            //
-            //     let hit_point = orig + t * dir;
-            //     let normal = (v1 - v2).cross(&(v1 - v3)).normalize();
-            //     let camera_dir = (-1.0 * dir).normalize();
-            //     let light_dir = (light_pos_p - hit_point).normalize();
-            //
-            //     let diffuse = -normal.dot(&light_dir);
-            //     // dbg!(diffuse);
-            //     let diffuse = diffuse.max(0.0);
-            //
-            //     let ambient = 0.1;
-            //
-            //     let r = 2.0 * (light_dir.dot(&normal)) * normal - light_dir;
-            //     let specular = r.dot(&camera_dir).max(0.0).powf(10.0);
-            //
-            //     1.0 * diffuse + ambient + specular
-            //     // 2.0 - t
-            // } else {
-            //     0.0
-            // };
-
-            // let blue = if let Some(t) = ray_triangle_intersect(orig, dir, (v1_p, v2_p, v4_p)) {
-            //     // println!("{t:?}");
-            //
-            //     // now check illumination of hit point
-            //
-            //     let hit_point = orig + t * dir;
-            //     let normal = (v1_p - v2_p).cross(&(v1_p - v4_p)).normalize();
-            //     // let camera = (-1.0 * dir).normalize();
-            //     let light_dir = (light_pos_p - hit_point).normalize();
-            //
-            //     let diffuse = normal.dot(&light_dir);
-            //
-            //     // dbg!(diffuse);
-            //     let diffuse = diffuse.max(0.0);
-            //
-            //
-            //     // 2.0 - t
-            //     1.0 * diffuse
-            // } else {
-            //     0.0
-            // };
-            // let blue = 0.0;
-
-
-            // let mut r = ((screen_vec - ball_center).length() <= projected_radius) as u8 as f64;
 
             let rgba = RGBA::new(red, green, blue, 1.0);
             canvas.put_pixel(u, v, rgba.into());
@@ -496,7 +438,9 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
 }
 
 fn main() {
-    let (width, height) = (80, 120);
+    // let (width, height) = (80, 120);
+    let (width, height) = (3*80, 3*120);
+    // let (width, height) = (20, 30);
 
     let opengl = OpenGL::V3_2;
     let mut window: PistonWindow =
@@ -550,9 +494,11 @@ fn main() {
 #[derive(Debug, Clone, Copy)]
 struct Triangle([usize; 3]);
 
-fn load_obj(filename: impl AsRef<Path>) -> (Vec<Vec3>, Vec<Triangle>) {
+fn load_obj(filename: impl AsRef<Path>) -> (Vec<Vec3>, Vec<Vec3>, Vec<(f64, f64)>, Vec<Triangle>, HashMap<usize, usize>) {
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
+    let mut uvs = Vec::new();
+    let mut vertices_t = HashMap::new();
 
     let mut file = File::open(filename).unwrap();
     let mut content = String::new();
@@ -567,12 +513,58 @@ fn load_obj(filename: impl AsRef<Path>) -> (Vec<Vec3>, Vec<Triangle>) {
                 vertices.push(Vec3([v[0], v[1], v[2]]));
             },
             "f" => {
-                let f = parts[1..].iter().map(|x| x.split("/").next().unwrap().parse::<usize>().unwrap()).collect::<Vec<_>>();
-                triangles.push(Triangle([f[0] - 1, f[1] - 1, f[2] - 1]));
+                let f = parts[1..].iter().map(|x| x.split("/").map(|e| e.parse::<usize>().unwrap()).collect::<Vec<_>>()).collect::<Vec<_>>();
+                let vi1 = f[0][0] - 1;
+                let vi2 = f[1][0] - 1;
+                let vi3 = f[2][0] - 1;
+
+                let uv1 = f[0][1] - 1;
+                let uv2 = f[1][1] - 1;
+                let uv3 = f[2][1] - 1;
+
+                triangles.push(Triangle([vi1, vi2, vi3]));
+
+                if vertices_t.contains_key(&vi1) {
+                    println!("ALREADY HAS: {}, NEW: {}", vertices_t[&vi1], uv1);
+                }
+
+                vertices_t.insert(vi1, uv1);
+                vertices_t.insert(vi2, uv2);
+                vertices_t.insert(vi3, uv3);
+            },
+            "vt" => {
+                let v = parts[1..].iter().map(|x| x.parse::<f64>().unwrap()).collect::<Vec<_>>();
+                uvs.push((v[0], v[1]));
             },
             _ => (),
         }
     }
 
-    (vertices, triangles)
+    let mut verts_n = vec![Vec::new(); vertices.len()];
+
+    for &Triangle([idx1, idx2, idx3]) in &triangles {
+        let v1 = vertices[idx1];
+        let v2 = vertices[idx2];
+        let v3 = vertices[idx3];
+
+        let normal = (v2 - v1).cross(&(v3 - v1)).normalize();
+        verts_n[idx1].push(normal);
+        verts_n[idx2].push(normal);
+        verts_n[idx3].push(normal);
+    }
+
+    let mut verts_normals = Vec::new();
+    for v in verts_n {
+        let mut normal = Vec3([0.0, 0.0, 0.0]);
+        for n in v {
+            normal = normal + n;
+        }
+        normal = normal.normalize();
+        verts_normals.push(normal);
+    }
+
+
+
+
+    (vertices, verts_normals, uvs, triangles, vertices_t)
 }
