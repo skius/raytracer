@@ -1136,7 +1136,10 @@ fn load_obj(filename: impl AsRef<Path>, texturename: impl AsRef<Path>) -> Polygo
                 triangles.push(Triangle([vi1, vi2, vi3]));
 
                 if vertices_t.contains_key(&vi1) {
-                    println!("ALREADY HAS: {}, NEW: {}", vertices_t[&vi1], uv1);
+                    // if mismatch report
+                    if vertices_t[&vi1] != uv1 {
+                        println!("ALREADY HAS: {}, NEW: {}", vertices_t[&vi1], uv1);
+                    }
                 }
 
                 vertices_t.insert(vi1, uv1);
