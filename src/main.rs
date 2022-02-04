@@ -1,14 +1,16 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::ops::{Add, Mul, Sub};
 use std::path::Path;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use ::image::*;
 use piston_window::*;
 use rand::Rng;
 use rayon::prelude::*;
+use crate::types::Color;
 
 struct RGBA([f64; 4]);
 
@@ -116,6 +118,17 @@ impl Mat3H {
             [c, 0.0, s, 0.0],
             [0.0, 1.0, 0.0, 0.0],
             [-s, 0.0, c, 0.0],
+            [0.0, 0.0, 0.0, 1.0]
+        ])
+    }
+
+    fn rot_z(theta: f64) -> Mat3H {
+        let c = theta.cos();
+        let s = theta.sin();
+        Mat3H([
+            [c, s, 0.0, 0.0],
+            [-s, c, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0]
         ])
     }
@@ -247,99 +260,166 @@ fn intersects_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Op
     }
 }
 
-fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) {
-    let cam_pos = Vec3([0.0, 0.0, 0.0]);
+fn interp_sky(t: f64) -> [f64; 3] {
+    [0.5 * (1.0 - t) + 1.0 * t, 0.7 * (1.0 - t) + 1.0 * t, 1.0 * (1.0 - t) + 1.0 * t]
+}
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum Kind {
+    Phong,
+    Mirror,
+}
+
+#[derive(Debug, Clone)]
+struct Object {
+    polygon_mesh: PolygonMesh,
+    kind: Kind,
+}
+
+#[derive(Debug, Copy, Clone, Eq)]
+struct Hit {
+    distance: f64,
+    u: f64,
+    v: f64,
+    triangle_idx: usize,
+}
+
+impl Hit {
+    fn new(distance: f64, u: f64, v: f64, triangle_idx: usize) -> Hit {
+        Hit {
+            distance,
+            u,
+            v,
+            triangle_idx,
+        }
+    }
+}
+
+impl PartialEq for Hit {
+    fn eq(&self, other: &Self) -> bool {
+        self.distance == other.distance
+    }
+}
+
+impl PartialOrd for Hit {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.distance.partial_cmp(&other.distance)
+    }
+}
+
+impl Ord for Hit {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.distance.partial_cmp(&other.distance).unwrap()
+    }
+}
+
+fn ray_hit_mesh(origin: Vec3, dir: Vec3, mesh: &PolygonMesh) -> Option<Hit> {
+    let mut closest_hit = Hit::new(f64::INFINITY, 0.0, 0.0, 0);
+    for (triangle_idx, triangle) in mesh.triangles.iter().enumerate() {
+        if let Some((dist, u, v)) = intersects_triangle(origin, dir, triangle.0, triangle.1, triangle.2) {
+            if dist < closest_hit.distance {
+                closest_hit = Hit::new(dist, u, v, triangle_idx);
+            }
+        }
+    }
+    if closest_hit.distance < f64::INFINITY {
+        Some(closest_hit)
+    } else {
+        None
+    }
+}
+
+fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object]) -> RGBA {
+    // Check if it hits an object
+    let closest_hit = Hit::new(f64::INFINITY, 0.0, 0.0, 0);
+    let closest_obj_idx = usize::MAX;
+    for (obj_idx, obj) in objects.iter().enumerate() {
+        let hit = obj.polygon_mesh.hit(origin, dir);
+        if let Some(hit) = hit {
+            if hit.distance < closest_hit.distance {
+                closest_hit = hit;
+                closest_obj_idx = obj_idx;
+            }
+        }
+    }
+
+    []
+
+}
+
+#[derive(Debug, Clone)]
+struct PolygonMesh {
+    vertices: Vec<Vec3>,
+    vertice_normals: Vec<Vec3>,
+    uv_coords: Vec<(f64, f64)>,
+    vertice_to_uv_idx: HashMap<usize, usize>,
+    triangles: Vec<Triangle>,
+    texture: DynamicImage,
+}
+
+impl PolygonMesh {
+    fn rotate_y(&mut self, angle: f64) {
+        let rot = Mat3H::rot_y(angle);
+
+        for vertice in &mut self.vertices {
+            *vertice = (rot * (*vertice).to_homogeneous()).homogeneous_divide();
+        }
+        for vertice_normal in &mut self.vertice_normals {
+            *vertice_normal = (rot * (*vertice_normal).to_homogeneous()).homogeneous_divide();
+        }
+    }
+
+    fn translate(&mut self, translation: Vec3) {
+        for vertice in &mut self.vertices {
+            *vertice = *vertice + translation;
+        }
+    }
+}
+
+fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, time: f64, objects: &[Object]) {
     let fov_y = 60.0 * std::f64::consts::PI / 180.0;
     let aspect_ratio = width as f64 / height as f64;
-    let h = 2.0 * (fov_y / 2.0).tan();
-    let f = (fov_y / 2.0).tan().recip();
+    dbg!(time);
+    let rotate180y = Mat3H::rot_y((150.0 + time) * std::f64::consts::PI / 180.0);
+    // let rotate180y = Mat3H::rot_y((150.0) * std::f64::consts::PI / 180.0);
 
-    let z_near = 0.1;
-    let z_far = 5.0;
-
-
-    let mut rotate180y = Mat3H([[0.0; 4]; 4]);
-    rotate180y.0[0][0] = -1.0;
-    rotate180y.0[1][1] = 1.0;
-    rotate180y.0[2][2] = -1.0;
-    rotate180y.0[3][3] = 1.0;
-
-    let rotate180y = Mat3H::rot_y(150.0 * std::f64::consts::PI / 180.0);
-
-
-    // dbg!(projection);
-
-
-    let light_pos = Vec3([2.0, 3.0, 2.5]).to_homogeneous();
     let light_pos = Vec3([5.0, 5.0, 0.0]).to_homogeneous();
-    //
-    // let v1_p = (projection * v1).homogeneous_divide();
-    // let v2_p = (projection * v2).homogeneous_divide();
-    // let v3_p = (projection * v3).homogeneous_divide();
-    // let v4_p = (projection * v4).homogeneous_divide();
-    // let light_pos_p = (projection * light_pos).homogeneous_divide();
-    //
-    // dbg!(v1_p);
-    // dbg!(v2_p);
-    // dbg!(v3_p);
-    // dbg!(v4_p);
 
-    let (mut verts, mut verts_n, mut uvs, mut triangles, mut verts_to_uv_idx) = load_obj("spot_triangulated.obj");
-    // dbg!(&verts);
-    // dbg!(triangles);
-
-    // let idx1 = verts.len();
-    // verts.push(Vec3([0.0, 0.1, -2.3]));
-    // let idx2 = verts.len();
-    // verts.push(Vec3([-0.1, 0.0, -2.3]));
-    // let idx3 = verts.len();
-    // verts.push(Vec3([0.1, 0.0, -2.3]));
-    //
-    // triangles.push(Triangle([idx1, idx2, idx3]));
-
-    let mut verts_p = verts.clone().into_iter().map(|v| {
+    let mut verts_p = polygon.vertices.clone().into_iter().map(|v| {
         let rotated = (rotate180y * v.to_homogeneous()).homogeneous_divide();
+        // let rotated = (rotate180y * (Mat3H::rot_z(50.0 * (0.05*time).sin() * std::f64::consts::PI / 180.0) * v.to_homogeneous())).homogeneous_divide();
 
-        rotated - Vec3([0.0, 0.0, 2.5])
+        rotated - Vec3([1.0, 0.0, 2.5])
     }).collect::<Vec<_>>();
 
-    let verts_n = verts_n.into_iter().map(|v| {
+    let mut verts_p_glossy = verts.clone().into_iter().map(|v| {
+        let rotated = (Mat3H::rot_y((220.0) * std::f64::consts::PI / 180.0) * v.to_homogeneous()).homogeneous_divide();
+
+        rotated - Vec3([-1.0, 0.0, 2.5])
+    }).collect::<Vec<_>>();
+
+    let verts_n_glossy = verts_n.clone().into_iter().map(|v| {
+        let rotated = (Mat3H::rot_y((220.0) * std::f64::consts::PI / 180.0) * v.to_homogeneous()).homogeneous_divide();
+
+        rotated
+    }).collect::<Vec<_>>();
+
+    let verts_n = verts_n.clone().into_iter().map(|v| {
         let rotated = (rotate180y * v.to_homogeneous()).homogeneous_divide();
 
         rotated
     }).collect::<Vec<_>>();
 
-    for v in &verts_p {
-        dbg!(v);
-    }
-
-
-    println!("");
-    for v in &verts_p {
-        println!("v {} {} {}", v.0[0], v.0[1], v.0[2]);
-    }
-    println!("");
-
-    // dbg!(light_pos_p);
-
-
-    let mut rng = rand::thread_rng();
-
-    let text = ::image::io::Reader::open("spot_texture.png").unwrap().decode().unwrap();
     let text_width = text.width() as usize;
     let text_height = text.height() as usize;
 
-    // for triangle in &triangles {
-    //
-    // }
 
-    for u in 0..width {
-        println!("Processing pixel column ({u},...)");
+    for u in 0..width/2 {
+        // println!("Processing pixel column ({u},...)");
 
         for v in 0..height {
 
-            println!("Processing coord ({},{})", u, v);
+            // println!("Processing coord ({},{})", u, v);
 
 
             let p_x = (2.0 * ((u as f64 + 0.5) / width as f64) - 1.0) * (fov_y / 2.0).tan() * aspect_ratio;
@@ -416,7 +496,7 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
 
                 let text_x = (text_u * text_width as f64).floor() as usize;
                 let text_y = text_height - (text_v * text_height as f64).floor() as usize;
-                dbg!((text_x, text_y));
+                // dbg!((text_x, text_y));
 
                 let Rgba([r, g, b, a]) = text.get_pixel(text_x as u32, text_y as u32);
 
@@ -428,7 +508,169 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
                 // [1.0 * diffuse + ambient, 0.0, 0.0]
                 // 2.0 - t
             } else {
-                [0.0; 3]
+                let t = dir.0[1];
+                interp_sky(t)
+            };
+
+            let rgba = RGBA::new(red, green, blue, 1.0);
+            canvas.put_pixel(u, v, rgba.into());
+        }
+    }
+
+    for u in width/2..width {
+        // println!("Processing pixel column ({u},...)");
+
+        for v in 0..height {
+
+            // println!("Processing coord ({},{})", u, v);
+
+
+            let p_x = (2.0 * ((u as f64 + 0.5) / width as f64) - 1.0) * (fov_y / 2.0).tan() * aspect_ratio;
+            let p_y = (1.0 - 2.0 * ((v as f64 + 0.5) / height as f64)) * (fov_y / 2.0).tan();
+
+            let orig = Vec3([0.0, 0.0, 0.0]);
+            let dir = Vec3([p_x, p_y, -1.0]).normalize();
+
+            // for &Triangle([vi1, vi2, vi3]) in &triangles {
+            //     let v1 = verts_p[vi1];
+            //     let v2 = verts_p[vi2];
+            //     let v3 = verts_p[vi3];
+            //
+            //
+            // }
+
+            let least = triangles.par_iter().enumerate().filter_map(|(i, &Triangle([vi1, vi2, vi3]))| {
+                let v1 = verts_p_glossy[vi1];
+                let v2 = verts_p_glossy[vi2];
+                let v3 = verts_p_glossy[vi3];
+
+                // match ray_triangle_intersect(orig, dir, (v1, v2, v3)) {
+                match intersects_triangle(orig, dir, v1, v2, v3) {
+                    Some(t) => Some((t, i)),
+                    None => None,
+                }
+                // }).fold(((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+            }).reduce(|| ((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+
+            let least = if least.0.0 == f64::INFINITY { None } else { Some(least) };
+
+            let [red, green, blue] = if let Some(((t, u, v), triangle_idx)) = least {
+                // dbg!(t);
+
+                // now check illumination of hit point
+                let triangle = triangles[triangle_idx];
+                let Triangle([vi1, vi2, vi3]) = triangle;
+
+                let hit_point = orig + t * dir;
+
+                let normal = (1.0 - u - v) * verts_n_glossy[vi1] + u * verts_n_glossy[vi2] + v * verts_n_glossy[vi3];
+
+                let camera_dir = (-1.0 * dir).normalize();
+
+                let r = 2.0 * (camera_dir.dot(&normal)) * normal - camera_dir;
+
+                let orig = hit_point;
+                let dir = r.normalize();
+
+                let light_dir = (light_pos.homogeneous_divide() - hit_point).normalize();
+                let specular = r.dot(&light_dir).max(0.0).powf(20.0);
+
+                let (u1, v1) = uvs[verts_to_uv_idx[&vi1]];
+                let (u2, v2) = uvs[verts_to_uv_idx[&vi2]];
+                let (u3, v3) = uvs[verts_to_uv_idx[&vi3]];
+
+                let text_u = (1.0 - u - v) * u1 + u * u2 + v * u3;
+                let text_v = (1.0 - u - v) * v1 + u * v2 + v * v3;
+
+                let text_x = (text_u * text_width as f64).floor() as usize;
+                let text_y = text_height - (text_v * text_height as f64).floor() as usize;
+                // dbg!((text_x, text_y));
+
+                let Rgba([r, g, b, a]) = text.get_pixel(text_x as u32, text_y as u32);
+                let r = r as f64 / 255.0;
+                let g = g as f64 / 255.0;
+                let b = b as f64 / 255.0;
+
+                let least = triangles.par_iter().enumerate().filter_map(|(i, &Triangle([vi1, vi2, vi3]))| {
+                    let v1 = verts_p[vi1];
+                    let v2 = verts_p[vi2];
+                    let v3 = verts_p[vi3];
+
+                    // match ray_triangle_intersect(orig, dir, (v1, v2, v3)) {
+                    match intersects_triangle(orig, dir, v1, v2, v3) {
+                        Some(t) => Some((t, i)),
+                        None => None,
+                    }
+                    // }).fold(((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+                }).reduce(|| ((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
+
+                let least = if least.0.0 == f64::INFINITY { None } else { Some(least) };
+
+                let [rr, rg, rb] = if let Some(((t, u, v), triangle_idx)) = least {
+                    // dbg!(t);
+
+                    // now check illumination of hit point
+                    let triangle = triangles[triangle_idx];
+                    let v1 = verts_p[triangle.0[0]];
+                    let v2 = verts_p[triangle.0[1]];
+                    let v3 = verts_p[triangle.0[2]];
+
+                    let Triangle([vi1, vi2, vi3]) = triangle;
+
+                    let hit_point = orig + t * dir;
+                    // let normal = 1.0 * (v2 - v1).cross(&(v3 - v1)).normalize();
+
+                    let normal = (1.0 - u - v) * verts_n[vi1] + u * verts_n[vi2] + v * verts_n[vi3];
+
+                    // dbg!(verts_n[vi1]);
+                    // dbg!(verts_n[vi2]);
+                    // dbg!(verts_n[vi3]);
+                    // dbg!(u);
+                    // dbg!(v);
+                    //
+                    // dbg!(normal);
+                    let camera_dir = (-1.0 * dir).normalize();
+                    let light_dir = (light_pos.homogeneous_divide() - hit_point).normalize();
+                    // let light_dir = Vec3([1.0, -1.0, 1.0]).normalize();
+
+                    let diffuse = normal.dot(&light_dir);
+                    // dbg!(diffuse);
+                    let diffuse = diffuse.max(0.0);
+
+                    let ambient = 0.1;
+
+                    let r = 2.0 * (light_dir.dot(&normal)) * normal - light_dir;
+                    let specular = r.dot(&camera_dir).max(0.0).powf(10.0);
+
+                    let (u1, v1) = uvs[verts_to_uv_idx[&vi1]];
+                    let (u2, v2) = uvs[verts_to_uv_idx[&vi2]];
+                    let (u3, v3) = uvs[verts_to_uv_idx[&vi3]];
+
+                    let text_u = (1.0 - u - v) * u1 + u * u2 + v * u3;
+                    let text_v = (1.0 - u - v) * v1 + u * v2 + v * v3;
+
+                    let text_x = (text_u * text_width as f64).floor() as usize;
+                    let text_y = text_height - (text_v * text_height as f64).floor() as usize;
+                    // dbg!((text_x, text_y));
+
+                    let Rgba([r, g, b, a]) = text.get_pixel(text_x as u32, text_y as u32);
+
+                    let r = r as f64 / 255.0;
+                    let g = g as f64 / 255.0;
+                    let b = b as f64 / 255.0;
+
+                    [(diffuse + ambient + specular) * r, (diffuse + ambient + specular) * g, (diffuse + ambient + specular) * b]
+                    // let t = dir.0[1];
+                    // interp_sky(t)
+                } else {
+                    let t = dir.0[1];
+                    interp_sky(t)
+                };
+
+                [rr * r + specular, rg * g + specular, rb * b + specular]
+            } else {
+                let t = dir.0[1];
+                interp_sky(t)
             };
 
             let rgba = RGBA::new(red, green, blue, 1.0);
@@ -438,9 +680,12 @@ fn render(width: u32, height: u32, canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>) 
 }
 
 fn main() {
-    // let (width, height) = (80, 120);
-    let (width, height) = (3*80, 3*120);
+    const width: u32 = 160;
+    const height: u32 = 120;
+    // let (width, height) = (5*160, 5*120);
     // let (width, height) = (20, 30);
+
+    let mut start = Instant::now();
 
     let opengl = OpenGL::V3_2;
     let mut window: PistonWindow =
@@ -452,8 +697,7 @@ fn main() {
 
     let mut canvas = ImageBuffer::new(width, height);
 
-    render(width, height, &mut canvas);
-
+    let spot_poly = load_obj("spot_triangulated.obj", "spot_texture.png");
 
     let mut texture_context = window.create_texture_context();
 
@@ -463,9 +707,11 @@ fn main() {
         &TextureSettings::new()
     ).unwrap();
 
+    let mut t = 0.0;
+
     while let Some(e) = window.next() {
         // println!("{:?}", e);
-        if let Some(_) = e.render_args() {
+        if let Some(re) = e.render_args() {
             // println!("{:?}", canvas.get_pixel(1,1));
             // canvas.put_pixel(1,1,RGBA::new(1.0, 0.0, 0.0, 1.0).into());
             // canvas.put_pixel(1,1,Rgba([255, 0, 0, 255]));
@@ -475,6 +721,31 @@ fn main() {
             //         canvas.put_pixel(x, y, Rgba([x as u8, y as u8, 0, 255]));
             //     }
             // }
+
+            dbg!(Instant::now().duration_since(start));
+            dbg!(re.ext_dt);
+            t += re.ext_dt;
+
+            let mut objects = Vec::new();
+            let mut phong = spot_poly.clone();
+            phong.rotate_y((150.0 + time) * std::f64::consts::PI / 180.0);
+            phong.translate(Vec3([-1.0, 0.0, -2.5]));
+            objects.push(Object {
+                polygon_mesh: phong,
+                kind: Kind::Phong,
+            });
+
+            let mut mirror = spot_poly.clone();
+            mirror.rotate_y((220) * std::f64::consts::PI / 180.0);
+            mirror.translate(Vec3([1.0, 0.0, -2.5]));
+            objects.push(Object {
+                polygon_mesh: mirror,
+                kind: Kind::Mirror,
+            });
+
+
+            render::<width, height>(&mut canvas, t * 50000.0, &objects);
+
 
             // render(width, height, &mut canvas);
             //
@@ -494,7 +765,7 @@ fn main() {
 #[derive(Debug, Clone, Copy)]
 struct Triangle([usize; 3]);
 
-fn load_obj(filename: impl AsRef<Path>) -> (Vec<Vec3>, Vec<Vec3>, Vec<(f64, f64)>, Vec<Triangle>, HashMap<usize, usize>) {
+fn load_obj(filename: impl AsRef<Path>, texturename: impl AsRef<Path>) -> PolygonMesh {
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
     let mut uvs = Vec::new();
@@ -563,8 +834,12 @@ fn load_obj(filename: impl AsRef<Path>) -> (Vec<Vec3>, Vec<Vec3>, Vec<(f64, f64)
         verts_normals.push(normal);
     }
 
-
-
-
-    (vertices, verts_normals, uvs, triangles, vertices_t)
+    PolygonMesh {
+        vertices,
+        vertice_normals: verts_normals,
+        uv_coords: uvs,
+        triangles,
+        vertice_to_uv_idx: vertices_t,
+        texture: ::image::io::Reader::open(texturename).unwrap().decode().unwrap(),
+    }
 }
