@@ -280,18 +280,19 @@ fn intersects_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Op
 }
 
 fn interp_sky(dir: Vec3) -> [f64; 3] {
-    let r1 = 0.5;
-    let r2 = 1.0;
+    let c1 = [0.5, 0.7, 1.0];
+    let c2 = [1.0, 1.0, 1.0];
 
-    let g1 = 0.7;
-    let g2 = 1.0;
+    // let c1 = [0.0, 0.0, 0.0];
+    // let c2 = [0.0, 0.0, 0.0];
 
-    let b1 = 1.0;
-    let b2 = 1.0;
+    // let c2 = [0.5, 0.7, 1.0];
+    // let c1 = [1.0, 1.0, 1.0];
+
 
     let t = dir.0[1];
 
-    let mut res = (1.0 - t) * Vec3([r1, g1, b1]) + t * Vec3([r2, g2, b2]);
+    let mut res = (1.0 - t) * Vec3(c1) + t * Vec3(c2);
 
     // let light_dir = Vec3([1.0, 1.0, 1.0]).normalize();
     // res = (dir.dot(&light_dir) + 1.0)/2.0 * res;
@@ -333,6 +334,7 @@ impl Kind {
         match self {
             Kind::Phong => 0.0,
             Kind::Mirror => 0.5,
+            // Kind::Matte(_) => 0.7,
             Kind::Matte(_) => 0.05,
             Kind::Dielectric(_) => 0.0,
         }
@@ -615,9 +617,6 @@ where f64: Mul<T, Output = T>, T: Add<T, Output = T>
     (1.0 - u - v) * a + u * b + v * c
 }
 
-const MAX_DEPTH: i32 = 5;
-const NUM_SAMPLES_PER_PIXEL: i32 = 20;
-
 fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3] {
     if depth >= 2 {
         // println!("Depth {}", depth);
@@ -728,6 +727,7 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
                     // this is randomly scattered
                     let diffuse_out = (Vec3([x, y, z]) + normal).normalize();
 
+                    // let new_dir = if obj.idx == 100 {
                     let new_dir = if obj.idx == 0 {
                         fuzzy_out
                     } else {
@@ -774,15 +774,33 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
                 let material_loss = 0.0;
 
                 let light_emission = if obj.idx == 100 {
-                    [0.2, 0.0, 0.0]
+                // let light_emission = if obj.idx == 1 {
+                    [1.0, 0.6, 0.6]
                 } else {
                     [0.0; 3]
                 };
 
+                // let ambient = [0.1, 0.1, 0.1];
+                let ambient = [0.0; 3];
+
+                // if obj.idx == 1 {
+                //     return [
+                //         point_r * light_emission[0],
+                //         point_g * light_emission[1],
+                //         point_b * light_emission[2]
+                //     ];
+                // } else {
+                //     return [
+                //         point_r * (reflected_r * (1.0 - material_loss) + light_emission[0] + ambient[0]),
+                //         point_g * (reflected_g * (1.0 - material_loss) + light_emission[1] + ambient[1]),
+                //         point_b * (reflected_b * (1.0 - material_loss) + light_emission[2] + ambient[2])
+                //     ];
+                // }
+
                 return [
-                    reflected_r * point_r * (1.0 - material_loss) + light_emission[0],
-                    reflected_g * point_g * (1.0 - material_loss) + light_emission[1],
-                    reflected_b * point_b * (1.0 - material_loss) + light_emission[2],
+                    point_r * (reflected_r * (1.0 - material_loss) + light_emission[0] + ambient[0]),
+                    point_g * (reflected_g * (1.0 - material_loss) + light_emission[1] + ambient[1]),
+                    point_b * (reflected_b * (1.0 - material_loss) + light_emission[2] + ambient[2])
                 ];
             },
             Kind::Dielectric(index_of_refraction) => {
@@ -811,7 +829,7 @@ fn raytrace(origin: Vec3, dir: Vec3, objects: &[Object], depth: i32) -> [f64; 3]
                     let dir = r.normalize();
                     dir
                 } else {
-                    refract(camera_dir, normal, index_of_refraction).normalize()
+                    refract(camera_dir, normal, eta).normalize()
                 };
 
 
@@ -941,8 +959,11 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
     });
 }
 
+const MAX_DEPTH: i32 = 60;
+const NUM_SAMPLES_PER_PIXEL: i32 = 10;
+
 fn main() {
-    const scale: u32 = 1;
+    const scale: u32 = 4;
 
     const width: u32 = scale * 160;
     const height: u32 = scale * 120;
@@ -966,6 +987,7 @@ fn main() {
 
     let spot_poly = load_obj("spot_triangulated.obj", "spot_texture_2.png");
     let triangle_poly = load_obj("triangle_floor.obj", "spot_texture.png");
+    let sphere_poly = load_obj("sphere.obj", "spot_texture.png");
 
     let mut texture_context = window.create_texture_context();
 
@@ -1002,7 +1024,7 @@ fn main() {
             let mut objects = Vec::new();
 
             let mut floor = triangle_poly.clone();
-            floor.translate(Vec3([0.0, -0.1, 0.0]));
+            // floor.translate(Vec3([0.0, -0.1, 0.0]));
             let obj = Object::from_mesh(floor, objects.len(), Kind::Matte(Vec3([0.7, 0.7, 0.7])));
             objects.push(obj);
 
@@ -1011,30 +1033,36 @@ fn main() {
             }
 
             let mut phong = spot_poly.clone();
-            phong.rotate_z(10.0 * oscillate(t * 40.0) * std::f64::consts::PI / 180.0);
+            // phong.rotate_z(10.0 * oscillate(t * 40.0) * std::f64::consts::PI / 180.0);
             // phong.rotate_x(t * 10000.0 * std::f64::consts::PI / 180.0);
             // phong.rotate_x(40.0 * (t * 2500.0).cos() * std::f64::consts::PI / 180.0);
-            phong.rotate_y((220.0 + 10.0 * (t*40.0).sin()) * std::f64::consts::PI / 180.0);
-            // phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
+            // phong.rotate_y((220.0 + 10.0 * (t*40.0).sin()) * std::f64::consts::PI / 180.0);
+            phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
             // phong.rotate_y((150.0) * std::f64::consts::PI / 180.0);
-            phong.translate(Vec3([0.0, 0.0, -2.5]));
-            // phong.translate(Vec3([-1.0, 0.0, -2.5]));
-            // let obj = Object::from_mesh(phong, objects.len(), Kind::Dielectric(1.5));
-            let obj = Object::from_mesh(phong, objects.len(), Kind::Mirror);
+            // phong.translate(Vec3([0.0, 0.0, -2.5]));
+            phong.translate(Vec3([-1.0, 0.0, -2.5]));
+            let obj = Object::from_mesh(phong, objects.len(), Kind::Dielectric(1.5));
+            // let obj = Object::from_mesh(phong, objects.len(), Kind::Mirror);
             objects.push(obj);
 
-            // let mut mirror = spot_poly.clone();
-            // mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
-            // mirror.translate(Vec3([1.0, 0.0, -2.5]));
-            // let obj = Object::from_mesh(mirror, objects.len(), Kind::Mirror);
-            // objects.push(obj);
+            let mut mirror = spot_poly.clone();
+            mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
+            mirror.translate(Vec3([1.0, 0.0, -2.5]));
+            let obj = Object::from_mesh(mirror, objects.len(), Kind::Mirror);
+            objects.push(obj);
+
+            // let mut sphere = sphere_poly.clone();
+            // sphere.translate(Vec3([0.0, 2.0, -9.0]));
+            // // let sphere_obj = Object::from_mesh(sphere, 6969, Kind::Matte(Vec3([0.5, 1.0, 0.5])));
+            // let sphere_obj = Object::from_mesh(sphere, objects.len(), Kind::Dielectric(1.5));
+            // objects.push(sphere_obj.clone());
 
 
             dbg!(Instant::now().duration_since(start));
             let pre = Instant::now();
-            // if Instant::now().duration_since(start) < Duration::from_secs(10) {
+            if Instant::now().duration_since(start) < Duration::from_secs(10) {
                 render::<width, height>(&mut canvas, &objects);
-            // }
+            }
             dbg!(Instant::now().duration_since(pre));
             dbg!(Instant::now().duration_since(start));
 
