@@ -1198,7 +1198,7 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
     [0.0; 3]
 }
 
-fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, scene: &Scene) {
+fn render<const width: u32, const height: u32>(canvas: &mut Vec<Vec<[f64; 3]>>, scene: &Scene) {
     let fov_y = 60.0 * std::f64::consts::PI / 180.0;
     let aspect_ratio = width as f64 / height as f64;
 
@@ -1254,15 +1254,16 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
         let green = total_g / NUM_SAMPLES_PER_PIXEL as f64;
         let blue = total_b / NUM_SAMPLES_PER_PIXEL as f64;
 
-        let rgba = RGBA::new(red, green, blue, 1.0);
-        ((u,v), rgba.into())
+        ((u,v), [red, green, blue])
     }).collect::<Vec<_>>().into_iter().for_each(|((u, v), rgba)| {
-        canvas.put_pixel(u, v, rgba);
+        canvas[v as usize][u as usize][0] += rgba[0];
+        canvas[v as usize][u as usize][1] += rgba[1];
+        canvas[v as usize][u as usize][2] += rgba[2];
     });
 }
 
 const MAX_DEPTH: i32 = 50;
-const NUM_SAMPLES_PER_PIXEL: i32 = 20;
+const NUM_SAMPLES_PER_PIXEL: i32 = 10;
 const NUM_SAMPLES_PER_BOUNCE: i32 = 1;
 
 const NUM_SAMPLES_FOR_DOF: u32 = 1;
@@ -1326,6 +1327,134 @@ fn main() {
 
     let mut t = 0.0;
 
+    let mut objects = Vec::new();
+
+    let mut floor = triangle_poly.clone();
+    // floor.translate(Vec3([0.0, -0.1, 0.0]));
+    let obj = Object::from_mesh(floor, objects.len(), Opaque {
+        metallic: 0.1,
+        // metallic: 0.005,
+        how_metallic: 1.0,
+        // how_metallic: 0.0,
+        diffuse: 0.8,
+        color: SolidColor(Vec3([0.7; 3])),
+        emission: Vec3([0.0, 0.0, 0.0]),
+        normal: SimpleNormal,
+    });
+    objects.push(obj);
+
+    fn oscillate(t: f64) -> f64 {
+        3.0 * t.sin() + (3.0*t).sin()
+    }
+
+    // let mut phong = spot_poly.clone();
+    // // phong.rotate_z(10.0 * oscillate(t * 40.0) * std::f64::consts::PI / 180.0);
+    // // phong.rotate_x(t * 10000.0 * std::f64::consts::PI / 180.0);
+    // // phong.rotate_x(40.0 * (t * 2500.0).cos() * std::f64::consts::PI / 180.0);
+    // // phong.rotate_y((220.0 + 10.0 * (t*40.0).sin()) * std::f64::consts::PI / 180.0);
+    // phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
+    // // phong.rotate_y((150.0) * std::f64::consts::PI / 180.0);
+    // // phong.translate(Vec3([0.0, 0.0, -2.5]));
+    // phong.translate(Vec3([-1.0, 0.0, -2.5]));
+    // // let obj = Object::from_mesh(phong, objects.len(),Opaque {
+    // //     metallic: 0.0,
+    // //     how_metallic: 0.0,
+    // //     diffuse: 0.5,
+    // //     color: Texture(spot_text.clone()),
+    // //     emission: Vec3([0.0, 0.0, 0.0]),
+    // //     normal: SimpleNormal,
+    // // });
+    // let obj = Object::from_mesh(phong, objects.len(), Dielectric(1.5));
+    // objects.push(obj);
+
+    let mut mirror = spot_poly.clone();
+    mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
+    mirror.translate(Vec3([1.0, 0.0, -2.5]));
+    let obj = Object::from_mesh(mirror, objects.len(),Opaque {
+        metallic: 0.0,
+        how_metallic: 0.0,
+        diffuse: 0.5,
+        color: Texture(spot_text.clone()),
+        emission: Vec3([0.0, 0.0, 0.0]),
+        normal: SimpleNormal,
+    });
+    objects.push(obj);
+
+    // let mut sphere = sphere_poly.clone();
+    // sphere.translate(Vec3([0.0, 2.0, -7.0]));
+    // let sphere_obj = Object::from_mesh(sphere, objects.len(),Opaque {
+    //     metallic: 0.0,
+    //     how_metallic: 0.0,
+    //     diffuse: 0.9,
+    //     // color: SolidColor(Vec3([1.0, 1.0, 1.0])),
+    //     color: SolidColor(Vec3([1.0, 0.3, 0.0])),
+    //     // emission: Vec3([1.0, 1.0, 1.0]),
+    //     emission: Vec3([0.0, 0.0, 0.0]),
+    //     normal: SimpleNormal,
+    // });
+
+    let sphere_obj = Object::sphere(Vec3([-0.3, -0.2, -2.8]), 0.5, objects.len(), Opaque {
+        metallic: 0.0,
+        how_metallic: 1.0,
+        diffuse: 0.9,
+        color: SolidColor(Vec3([0.7, 0.7, 0.75])),
+        emission: Vec3([0.0, 0.0, 0.0]),
+        normal: SimpleNormal,
+    });
+    objects.push(sphere_obj.clone());
+
+    let sphere_obj = Object::sphere(Vec3([-1.0, -0.5, -2.8]), 0.2, objects.len(), Opaque {
+        metallic: 0.0,
+        how_metallic: 1.0,
+        diffuse: 0.9,
+        color: SolidColor(Vec3([1.0, 1.0, 1.0])),
+        emission: Vec3([0.0, 0.0, 0.0]),
+        normal: SimpleNormal,
+    });
+    objects.push(sphere_obj.clone());
+
+    let sphere_obj = Object::sphere(Vec3([0.3, -0.4, -1.4]), 0.3, objects.len(), Dielectric(1.5));
+    objects.push(sphere_obj.clone());
+
+    // let sphere_obj = Object::sphere(Vec3([0.0, 1.3, -2.4]), 1.0, objects.len(),  Opaque {
+    //     metallic: 0.0,
+    //     how_metallic: 0.0,
+    //     diffuse: 1.0,
+    //     color: SolidColor(Vec3([0.7, 0.0, 0.0])),
+    //     emission: Vec3([0.0, 0.0, 0.0]),
+    //     normal: SimpleNormal,
+    // });
+    // objects.push(sphere_obj.clone());
+
+    let sphere_obj = Object::sphere(Vec3([-0.15, -0.6, -2.0]), 0.1, objects.len(),  Opaque {
+        metallic: 0.0,
+        how_metallic: 0.0,
+        diffuse: 1.0,
+        color: SolidColor(Vec3([0.7, 0.0, 0.0])),
+        emission: Vec3([0.0, 0.0, 0.0]),
+        normal: SimpleNormal,
+    });
+    objects.push(sphere_obj.clone());
+
+    // let mut ogre = ogre_poly.clone();
+    // ogre.rotate_y((20.0) * std::f64::consts::PI / 180.0);
+    // ogre.translate(Vec3([0.0, 0.0, -2.0]));
+    // let ogre_obj = Object::from_mesh(ogre, objects.len(),Opaque {
+    //     metallic: 0.0,
+    //     how_metallic: 0.0,
+    //     diffuse: 0.9,
+    //     color: Texture(ogre_text.clone()),
+    //     normal: NormalMap(ogre_normal.clone()),
+    //     emission: Vec3([0.0, 0.0, 0.0]),
+    // });
+    // objects.push(ogre_obj);
+
+    let scene = Scene::from_objects(objects);
+
+    let mut buffer = vec![vec![[0.0; 3]; WIDTH as usize]; HEIGHT as usize];
+
+    let mut its = 0;
+
     while let Some(e) = window.next() {
         println!("{:?}", e);
         if let Some(ue) = e.update_args() {
@@ -1348,126 +1477,26 @@ fn main() {
             dbg!(re.ext_dt);
             // t += re.ext_dt;
 
-            let mut objects = Vec::new();
 
-            let mut floor = triangle_poly.clone();
-            // floor.translate(Vec3([0.0, -0.1, 0.0]));
-            let obj = Object::from_mesh(floor, objects.len(), Opaque {
-                metallic: 0.005,
-                // how_metallic: 1.0,
-                how_metallic: 0.0,
-                diffuse: 0.8,
-                color: SolidColor(Vec3([0.7; 3])),
-                emission: Vec3([0.0, 0.0, 0.0]),
-                normal: SimpleNormal,
-            });
-            objects.push(obj);
-
-            fn oscillate(t: f64) -> f64 {
-                3.0 * t.sin() + (3.0*t).sin()
-            }
-
-            // let mut phong = spot_poly.clone();
-            // // phong.rotate_z(10.0 * oscillate(t * 40.0) * std::f64::consts::PI / 180.0);
-            // // phong.rotate_x(t * 10000.0 * std::f64::consts::PI / 180.0);
-            // // phong.rotate_x(40.0 * (t * 2500.0).cos() * std::f64::consts::PI / 180.0);
-            // // phong.rotate_y((220.0 + 10.0 * (t*40.0).sin()) * std::f64::consts::PI / 180.0);
-            // phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
-            // // phong.rotate_y((150.0) * std::f64::consts::PI / 180.0);
-            // // phong.translate(Vec3([0.0, 0.0, -2.5]));
-            // phong.translate(Vec3([-1.0, 0.0, -2.5]));
-            // // let obj = Object::from_mesh(phong, objects.len(),Opaque {
-            // //     metallic: 0.0,
-            // //     how_metallic: 0.0,
-            // //     diffuse: 0.5,
-            // //     color: Texture(spot_text.clone()),
-            // //     emission: Vec3([0.0, 0.0, 0.0]),
-            // //     normal: SimpleNormal,
-            // // });
-            // let obj = Object::from_mesh(phong, objects.len(), Dielectric(1.5));
-            // objects.push(obj);
-
-            let mut mirror = spot_poly.clone();
-            mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
-            mirror.translate(Vec3([1.0, 0.0, -2.5]));
-            let obj = Object::from_mesh(mirror, objects.len(),Opaque {
-                metallic: 0.0,
-                how_metallic: 0.0,
-                diffuse: 0.5,
-                color: Texture(spot_text.clone()),
-                emission: Vec3([0.0, 0.0, 0.0]),
-                normal: SimpleNormal,
-            });
-            objects.push(obj);
-
-            // let mut sphere = sphere_poly.clone();
-            // sphere.translate(Vec3([0.0, 2.0, -7.0]));
-            // let sphere_obj = Object::from_mesh(sphere, objects.len(),Opaque {
-            //     metallic: 0.0,
-            //     how_metallic: 0.0,
-            //     diffuse: 0.9,
-            //     // color: SolidColor(Vec3([1.0, 1.0, 1.0])),
-            //     color: SolidColor(Vec3([1.0, 0.3, 0.0])),
-            //     // emission: Vec3([1.0, 1.0, 1.0]),
-            //     emission: Vec3([0.0, 0.0, 0.0]),
-            //     normal: SimpleNormal,
-            // });
-
-            let sphere_obj = Object::sphere(Vec3([-0.3, -0.2, -2.8]), 0.5, objects.len(), Opaque {
-                metallic: 0.0,
-                how_metallic: 1.0,
-                diffuse: 0.9,
-                color: SolidColor(Vec3([0.7, 0.7, 0.75])),
-                emission: Vec3([0.0, 0.0, 0.0]),
-                normal: SimpleNormal,
-            });
-            objects.push(sphere_obj.clone());
-
-            let sphere_obj = Object::sphere(Vec3([-1.0, -0.5, -2.8]), 0.2, objects.len(), Opaque {
-                metallic: 0.0,
-                how_metallic: 1.0,
-                diffuse: 0.9,
-                color: SolidColor(Vec3([1.0, 1.0, 1.0])),
-                emission: Vec3([0.0, 0.0, 0.0]),
-                normal: SimpleNormal,
-            });
-            objects.push(sphere_obj.clone());
-
-            let sphere_obj = Object::sphere(Vec3([0.3, -0.4, -1.4]), 0.3, objects.len(), Dielectric(1.5));
-            objects.push(sphere_obj.clone());
-
-            let sphere_obj = Object::sphere(Vec3([0.0, 1.3, -2.4]), 1.0, objects.len(),  Opaque {
-                metallic: 0.0,
-                how_metallic: 0.0,
-                diffuse: 1.0,
-                color: SolidColor(Vec3([0.7, 0.0, 0.0])),
-                emission: Vec3([0.0, 0.0, 0.0]),
-                normal: SimpleNormal,
-            });
-            objects.push(sphere_obj.clone());
-
-            // let mut ogre = ogre_poly.clone();
-            // ogre.rotate_y((20.0) * std::f64::consts::PI / 180.0);
-            // ogre.translate(Vec3([0.0, 0.0, -2.0]));
-            // let ogre_obj = Object::from_mesh(ogre, objects.len(),Opaque {
-            //     metallic: 0.0,
-            //     how_metallic: 0.0,
-            //     diffuse: 0.9,
-            //     color: Texture(ogre_text.clone()),
-            //     normal: NormalMap(ogre_normal.clone()),
-            //     emission: Vec3([0.0, 0.0, 0.0]),
-            // });
-            // objects.push(ogre_obj);
-
-            let scene = Scene::from_objects(objects);
 
             dbg!(Instant::now().duration_since(start));
             let pre = Instant::now();
-            if Instant::now().duration_since(start) < Duration::from_secs(10) {
-                render::<WIDTH, HEIGHT>(&mut canvas, &scene);
-            }
+            // if Instant::now().duration_since(start) < Duration::from_secs(10) {
+                render::<WIDTH, HEIGHT>(&mut buffer, &scene);
+                its += 1;
+            // }
             dbg!(Instant::now().duration_since(pre));
             dbg!(Instant::now().duration_since(start));
+
+            let pre_canvas_update = Instant::now();
+            for x in 0..WIDTH {
+                for y in 0..HEIGHT {
+                    let p = buffer[y as usize][x as usize];
+                    let c = RGBA([p[0] / its as f64, p[1] / its as f64, p[2] / its as f64, 1.0]);
+                    canvas.put_pixel(x, y, c.into());
+                }
+            }
+            dbg!(Instant::now().duration_since(pre_canvas_update));
 
 
             // render(width, height, &mut canvas);
