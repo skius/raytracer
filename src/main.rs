@@ -13,7 +13,8 @@ use bvh::bvh::BVH;
 use bvh::{Point3, Vector3};
 use bvh::ray::Ray;
 use piston_window::{*, Texture};
-use rand::Rng;
+use rand::{random, Rng};
+use rand::rngs::ThreadRng;
 use rayon::prelude::*;
 use crate::types::Color;
 
@@ -276,6 +277,23 @@ fn intersects_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Op
         Some((dist, u, v))
     } else {
         None
+    }
+}
+
+fn random_unit_sphere_surface(r: &mut ThreadRng) -> Vec3 {
+    loop {
+        let x1: f64 = r.gen_range(-1.0..1.0);
+        let x2: f64 = r.gen_range(-1.0..1.0);
+        if x1 * x1 + x2 * x2 >= 1.0 {
+            continue;
+        }
+
+        let sqrt = (1.0 - x1 * x1 - x2 * x2).sqrt();
+
+        let x = 2.0 * x1 * sqrt;
+        let y = 2.0 * x2 * sqrt;
+        let z = 1.0 - 2.0 * (x1 * x1 + x2 * x2);
+        return Vec3([x, y, z]);
     }
 }
 
@@ -850,17 +868,33 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
                     let mut reflected_b = 0.0;
 
                     for _ in 0..NUM_SAMPLES_PER_BOUNCE {
-                        let xm = rng.gen_range(-metallic..=metallic);
-                        let ym = rng.gen_range(-metallic..=metallic);
-                        let zm = rng.gen_range(-metallic..=metallic);
+                        // let xm = rng.gen_range(-metallic..=metallic);
+                        // let ym = rng.gen_range(-metallic..=metallic);
+                        // let zm = rng.gen_range(-metallic..=metallic);
+                        let Vec3([xm, ym, zm]) = metallic * random_unit_sphere_surface(&mut rng);
 
                         let xd = rng.gen_range(-diffuse..=diffuse);
                         let yd = rng.gen_range(-diffuse..=diffuse);
                         let zd = rng.gen_range(-diffuse..=diffuse);
 
+                        // let mut diffuse_out = Vec3([0.0, 0.0, 0.0]);
+                        //
+                        // loop {
+                        //     let random_sphere = random_unit_sphere_surface(&mut rng);
+                        //
+                        //     if random_sphere.dot(&normal) > 0.0 {
+                        //         diffuse_out = random_sphere;
+                        //         break;
+                        //     }
+                        // }
+
+                        // this is randomly scattered across unit sphere
+                        // let mut diffuse_out = (diffuse * random_unit_sphere_surface(&mut rng) + normal).normalize();
+
+
                         // this is fuzzy reflection/metallic
                         let fuzzy_out = (Vec3([xm, ym, zm]) + dir).normalize();
-                        // this is randomly scattered
+                        // this is randomly scattered across unit cube
                         let diffuse_out = (Vec3([xd, yd, zd]) + normal).normalize();
 
                         let new_dir = how_metallic * fuzzy_out + (1.0 - how_metallic) * diffuse_out;
@@ -880,10 +914,16 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
 
                     let material_loss = 0.0; // idk if used
 
+                    // return [
+                    //     point_r * (reflected_r * (1.0 - material_loss) + emission.0[0]),
+                    //     point_g * (reflected_g * (1.0 - material_loss) + emission.0[1]),
+                    //     point_b * (reflected_b * (1.0 - material_loss) + emission.0[2])
+                    // ];
+
                     return [
-                        point_r * (reflected_r * (1.0 - material_loss) + emission.0[0]),
-                        point_g * (reflected_g * (1.0 - material_loss) + emission.0[1]),
-                        point_b * (reflected_b * (1.0 - material_loss) + emission.0[2])
+                        point_r * reflected_r * (1.0 - material_loss) + emission.0[0],
+                        point_g * reflected_g * (1.0 - material_loss) + emission.0[1],
+                        point_b * reflected_b * (1.0 - material_loss) + emission.0[2]
                     ];
                 },
                 &Dielectric(index_of_refraction) => {
@@ -991,7 +1031,7 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
 }
 
 const MAX_DEPTH: i32 = 100;
-const NUM_SAMPLES_PER_PIXEL: i32 = 10;
+const NUM_SAMPLES_PER_PIXEL: i32 = 80;
 const NUM_SAMPLES_PER_BOUNCE: i32 = 1;
 
 const NUM_SAMPLES_FOR_DOF: u32 = 1;
@@ -1082,7 +1122,7 @@ fn main() {
             let obj = Object::from_mesh(floor, objects.len(), Opaque {
                 metallic: 0.005,
                 how_metallic: 1.0,
-                diffuse: 0.0,
+                diffuse: 0.8,
                 color: SolidColor(Vec3([0.7; 3])),
                 emission: Vec3([0.0, 0.0, 0.0]),
                 normal: SimpleNormal,
@@ -1132,7 +1172,9 @@ fn main() {
                 metallic: 0.0,
                 how_metallic: 0.0,
                 diffuse: 0.9,
+                // color: SolidColor(Vec3([1.0, 1.0, 1.0])),
                 color: SolidColor(Vec3([1.0, 0.3, 0.0])),
+                // emission: Vec3([1.0, 1.0, 1.0]),
                 emission: Vec3([0.0, 0.0, 0.0]),
                 normal: SimpleNormal,
             });
