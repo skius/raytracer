@@ -952,10 +952,25 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
             let p_x = (2.0 * ((u as f64 + 0.5 + x_offset) / width as f64) - 1.0) * (fov_y / 2.0).tan() * aspect_ratio;
             let p_y = (1.0 - 2.0 * ((v as f64 + 0.5 + y_offset) / height as f64)) * (fov_y / 2.0).tan();
 
-            let orig = Vec3([0.0, 0.0, 0.0]);
-            let dir = Vec3([p_x, p_y, -1.0]).normalize();
+            let mut curr_r = 0.0;
+            let mut curr_g = 0.0;
+            let mut curr_b = 0.0;
 
-            raytrace(orig, dir, scene, 0)
+            for _ in 0..10 {
+                let strength = 0.1;
+                let orig_x_offset = rng.gen_range(-strength..strength);
+                let orig_y_offset = rng.gen_range(-strength..strength);
+
+                let orig = Vec3([orig_x_offset, orig_y_offset, 0.0]);
+                let dir = 2.4 * Vec3([p_x, p_y, -1.0]).normalize();
+
+                let [r, g, b] = raytrace(orig, (dir - orig).normalize(), scene, 0);
+                curr_r += r;
+                curr_g += g;
+                curr_b += b;
+            }
+
+            [curr_r / 10.0, curr_g / 10.0, curr_b / 10.0]
         }).collect::<Vec<_>>().into_iter().for_each(|[r, g, b]| {
             total_r += r;
             total_g += g;
@@ -977,7 +992,7 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
 }
 
 const MAX_DEPTH: i32 = 100;
-const NUM_SAMPLES_PER_PIXEL: i32 = 80;
+const NUM_SAMPLES_PER_PIXEL: i32 = 10;
 const NUM_SAMPLES_PER_BOUNCE: i32 = 1;
 
 fn main() {
@@ -1109,17 +1124,18 @@ fn main() {
             });
             objects.push(obj);
 
-            // let mut sphere = sphere_poly.clone();
-            // sphere.translate(Vec3([0.0, 2.0, -7.0]));
-            // let sphere_obj = Object::from_mesh(sphere, objects.len(),Opaque {
-            //     metallic: 0.0,
-            //     how_metallic: 0.0,
-            //     diffuse: 0.9,
-            //     color: SolidColor(Vec3([1.0, 0.3, 0.0])),
-            //     emission: Vec3([0.0, 0.0, 0.0]),
-            // });
-            // // let sphere_obj = Object::from_mesh(sphere, objects.len(), Kind::Dielectric(1.5));
-            // objects.push(sphere_obj.clone());
+            let mut sphere = sphere_poly.clone();
+            sphere.translate(Vec3([0.0, 2.0, -7.0]));
+            let sphere_obj = Object::from_mesh(sphere, objects.len(),Opaque {
+                metallic: 0.0,
+                how_metallic: 0.0,
+                diffuse: 0.9,
+                color: SolidColor(Vec3([1.0, 0.3, 0.0])),
+                emission: Vec3([0.0, 0.0, 0.0]),
+                normal: SimpleNormal,
+            });
+            // let sphere_obj = Object::from_mesh(sphere, objects.len(), Kind::Dielectric(1.5));
+            objects.push(sphere_obj.clone());
 
             // let mut ogre = ogre_poly.clone();
             // ogre.rotate_y((20.0) * std::f64::consts::PI / 180.0);
