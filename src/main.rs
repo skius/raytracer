@@ -320,6 +320,59 @@ fn reflectance(cosine: f64, ref_idx: f64) -> f64 {
 }
 
 #[derive(Clone)]
+enum NormalKind {
+    SimpleNormal,
+    NormalMap(DynamicImage),
+}
+
+impl NormalKind {
+    fn normal_at(&self, n1: Vec3, n2: Vec3, n3: Vec3, tex_u: f64, tex_v: f64, u: f64, v: f64) -> Vec3 {
+    // fn normal_at(&self, n1: Vec3, n2: Vec3, n3: Vec3, uv1: (f64, f64), uv2: (f64, f64), uv3: (f64, f64), u: f64, v: f64) -> Vec3 {
+        let world_normal = bary_interp::<Vec3>(n1, n2, n3, u, v);
+        match &self {
+            SimpleNormal => {
+                world_normal
+            },
+            NormalMap(nm) => {
+                let text_width = nm.width();
+                let text_height = nm.height();
+                let text_x = (tex_u * text_width as f64).floor() as u32;
+                let text_y = ((1.0 - tex_v) * text_height as f64).floor() as u32;
+
+                let Rgba([r, g, b, _]) = nm.get_pixel(text_x, text_y);
+
+                let r = r as f64 / 255.0;
+                let g = g as f64 / 255.0;
+                let b = b as f64 / 255.0;
+
+                let ts_normal = Vec3([r, g, b]).normalize();
+
+                let mut t = world_normal.cross(&Vec3([0.0, 1.0, 0.0]));
+                if t.length().abs() < epsilon {
+                    t = world_normal.cross(&Vec3([0.0, 0.0, 1.0]));
+                }
+                t = t.normalize();
+                let b = world_normal.cross(&t);
+                let map_n = ts_normal;
+                let map_n = 2.0 * map_n - Vec3([1.0, 1.0, 1.0]);
+                let tbn = Mat3H([
+                    [t.0[0], b.0[0], world_normal.0[0], 0.0],
+                    [t.0[1], b.0[1], world_normal.0[1], 0.0],
+                    [t.0[2], b.0[2], world_normal.0[2], 0.0],
+                    [0.0, 0.0, 0.0, 1.0]
+                ]);
+
+                let normal = (tbn * map_n.to_homogeneous()).homogeneous_divide().normalize();
+
+                normal
+            }
+        }
+    }
+}
+
+use NormalKind::*;
+
+#[derive(Clone)]
 enum ColorKind {
     SolidColor(Vec3),
     Texture(DynamicImage),
@@ -356,6 +409,7 @@ enum Material {
         diffuse: f64,
         how_metallic: f64,
         emission: Vec3,
+        normal: NormalKind,
     }
 }
 use Material::*;
@@ -767,6 +821,7 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
                     how_metallic,
                     ref color,
                     emission,
+                    normal: ref normal_kind,
                 } => {
                     let (u1, v1) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&hit.triangle_idx][0]];
                     let (u2, v2) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&hit.triangle_idx][1]];
@@ -776,6 +831,8 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
                     let text_v = bary_interp(v1, v2, v3, hit.u, hit.v);
 
                     let Vec3([point_r, point_g, point_b]) = color.color_at(text_u, text_v);
+
+                    let normal = normal_kind.normal_at(n1, n2, n3, text_u, text_v, hit.u, hit.v);
 
                     // if backface, set reflected ray to be the same as the original ray to pass through the triangle
                     let r = if camera_dir.dot(&normal) < 0.0 {
@@ -920,7 +977,7 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
 }
 
 const MAX_DEPTH: i32 = 100;
-const NUM_SAMPLES_PER_PIXEL: i32 = 20;
+const NUM_SAMPLES_PER_PIXEL: i32 = 80;
 const NUM_SAMPLES_PER_BOUNCE: i32 = 1;
 
 fn main() {
@@ -949,6 +1006,25 @@ fn main() {
     let spot_text = ::image::io::Reader::open("spot_texture_2.png").unwrap().decode().unwrap();
     let triangle_poly = load_obj("triangle_floor.obj");
     let sphere_poly = load_obj("sphere.obj");
+
+    let ogre_poly = load_obj("ogre/bs_rest.obj");
+    let ogre_text = ::image::io::Reader::open("ogre/diffuse.png").unwrap().decode().unwrap();
+    let ogre_normal = ::image::io::Reader::open("ogre/normalmap.png").unwrap().decode().unwrap();
+
+    // let ogre_text_ao = ::image::io::Reader::open("ogre/ao_rest.png").unwrap().decode().unwrap();
+    // let mut ogre_text = DynamicImage::new_rgba8(ogre_text_diffuse.width(), ogre_text_diffuse.height());
+    // for (x, y, pixel) in ogre_text_diffuse.pixels() {
+    //     let ao = ogre_text_ao.get_pixel(x, y);
+    //
+    //     let new_pixel = Rgba([
+    //         (pixel[0] as f32 * ao[0] as f32 / 255.0) as u8,
+    //         (pixel[1] as f32 * ao[0] as f32 / 255.0) as u8,
+    //         (pixel[2] as f32 * ao[0] as f32 / 255.0) as u8,
+    //         (pixel[3] as f32 * ao[0] as f32 / 255.0) as u8,
+    //     ]);
+    //
+    //     ogre_text.put_pixel(x, y, new_pixel);
+    // }
 
     let mut texture_context = window.create_texture_context();
 
@@ -992,6 +1068,7 @@ fn main() {
                 diffuse: 0.0,
                 color: SolidColor(Vec3([0.7; 3])),
                 emission: Vec3([0.0, 0.0, 0.0]),
+                normal: SimpleNormal,
             });
             objects.push(obj);
 
@@ -1014,6 +1091,7 @@ fn main() {
             //     diffuse: 0.5,
             //     color: Texture(spot_text.clone()),
             //     emission: Vec3([0.0, 0.0, 0.0]),
+            //     normal: SimpleNormal,
             // });
             let obj = Object::from_mesh(phong, objects.len(), Dielectric(1.5));
             objects.push(obj);
@@ -1027,6 +1105,7 @@ fn main() {
                 diffuse: 0.5,
                 color: Texture(spot_text.clone()),
                 emission: Vec3([0.0, 0.0, 0.0]),
+                normal: SimpleNormal,
             });
             objects.push(obj);
 
@@ -1041,6 +1120,19 @@ fn main() {
             // });
             // // let sphere_obj = Object::from_mesh(sphere, objects.len(), Kind::Dielectric(1.5));
             // objects.push(sphere_obj.clone());
+
+            // let mut ogre = ogre_poly.clone();
+            // ogre.rotate_y((20.0) * std::f64::consts::PI / 180.0);
+            // ogre.translate(Vec3([0.0, 0.0, -2.0]));
+            // let ogre_obj = Object::from_mesh(ogre, objects.len(),Opaque {
+            //     metallic: 0.0,
+            //     how_metallic: 0.0,
+            //     diffuse: 0.9,
+            //     color: Texture(ogre_text.clone()),
+            //     normal: NormalMap(ogre_normal.clone()),
+            //     emission: Vec3([0.0, 0.0, 0.0]),
+            // });
+            // objects.push(ogre_obj);
 
             let scene = Scene::from_objects(objects);
 
