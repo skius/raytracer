@@ -964,7 +964,6 @@ const NUM_SAMPLES_PER_PIXEL: i32 = 10;
 
 fn main() {
     const scale: u32 = 4;
-
     const width: u32 = scale * 160;
     const height: u32 = scale * 120;
     // const width: u32 = 9*160;
@@ -1051,11 +1050,11 @@ fn main() {
             let obj = Object::from_mesh(mirror, objects.len(), Kind::Mirror);
             objects.push(obj);
 
-            // let mut sphere = sphere_poly.clone();
-            // sphere.translate(Vec3([0.0, 2.0, -9.0]));
-            // // let sphere_obj = Object::from_mesh(sphere, 6969, Kind::Matte(Vec3([0.5, 1.0, 0.5])));
+            let mut sphere = sphere_poly.clone();
+            sphere.translate(Vec3([0.0, 2.0, -9.0]));
+            let sphere_obj = Object::from_mesh(sphere, objects.len(), Kind::Matte(Vec3([0.5, 0.6, 1.0])));
             // let sphere_obj = Object::from_mesh(sphere, objects.len(), Kind::Dielectric(1.5));
-            // objects.push(sphere_obj.clone());
+            objects.push(sphere_obj.clone());
 
 
             dbg!(Instant::now().duration_since(start));
