@@ -280,6 +280,29 @@ fn intersects_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Op
     }
 }
 
+fn intersects_sphere(center: Vec3, radius: f64, orig: Vec3, dir: Vec3) -> Option<f64> {
+    let oc = orig - center;
+    let a = dir.dot(&dir);
+    let half_b = oc.dot(&dir);
+    let c = oc.dot(&oc) - radius * radius;
+    let discriminant = half_b * half_b - a * c;
+
+    if discriminant < 0.0 {
+        return None;
+    }
+
+    let sqrtd = discriminant.sqrt();
+    let root1 = (-half_b - sqrtd) / a;
+    if root1 < epsilon {
+        let root2 = (-half_b + sqrtd) / a;
+        if root2 < epsilon {
+            return None;
+        }
+        return Some(root2);
+    }
+    Some(root1)
+}
+
 fn random_unit_sphere_surface(r: &mut ThreadRng) -> Vec3 {
     loop {
         let x1: f64 = r.gen_range(-1.0..1.0);
@@ -344,9 +367,7 @@ enum NormalKind {
 }
 
 impl NormalKind {
-    fn normal_at(&self, n1: Vec3, n2: Vec3, n3: Vec3, tex_u: f64, tex_v: f64, u: f64, v: f64) -> Vec3 {
-    // fn normal_at(&self, n1: Vec3, n2: Vec3, n3: Vec3, uv1: (f64, f64), uv2: (f64, f64), uv3: (f64, f64), u: f64, v: f64) -> Vec3 {
-        let world_normal = bary_interp::<Vec3>(n1, n2, n3, u, v);
+    fn normal_at(&self, world_normal: Vec3, tex_u: f64, tex_v: f64, u: f64, v: f64) -> Vec3 {
         match &self {
             SimpleNormal => {
                 world_normal
@@ -416,6 +437,31 @@ impl ColorKind {
             }
         }
     }
+
+    // fn color_at(&self, hit: &Hit) -> Vec3 {
+    //     match &self {
+    //         SolidColor(c) => *c,
+    //         Texture(img) => {
+    //             let (u, v) = match hit {
+    //                 Hit::Mesh { u, v, .. } => (*u, *v),
+    //                 _ => unreachable!(),
+    //             };
+    //
+    //             let text_width = img.width();
+    //             let text_height = img.height();
+    //             let text_x = (u * text_width as f64).floor() as u32;
+    //             let text_y = ((1.0 - v) * text_height as f64).floor() as u32;
+    //
+    //             let Rgba([r, g, b, _]) = img.get_pixel(text_x, text_y);
+    //
+    //             let r = r as f64 / 255.0;
+    //             let g = g as f64 / 255.0;
+    //             let b = b as f64 / 255.0;
+    //
+    //             Vec3([r, g, b])
+    //         }
+    //     }
+    // }
 }
 
 #[derive(Clone)]
@@ -465,7 +511,7 @@ impl Kind {
 }
 
 #[derive(Clone)]
-struct Object {
+struct MeshObject {
     polygon_mesh: PolygonMesh,
     material: Material,
     // bvh: BVH,
@@ -473,7 +519,33 @@ struct Object {
     idx: usize,
 }
 
+#[derive(Clone)]
+struct SphereObject {
+    center: Vec3,
+    radius: f64,
+    material: Material,
+    idx: usize,
+}
+
+#[derive(Clone)]
+enum Object {
+    Mesh(MeshObject),
+    Sphere(SphereObject),
+}
+
+use Object::*;
+
+
 impl Object {
+    fn sphere(c: Vec3, r: f64, idx: usize, mat: Material) -> Object {
+        Object::Sphere(SphereObject {
+            center: c,
+            radius: r,
+            material: mat,
+            idx: idx,
+        })
+    }
+
     fn from_mesh(p: PolygonMesh, obj_idx: usize, mat: Material) -> Object {
         // let pre = Instant::now();
         // let mut flat_triangles = Vec::new();
@@ -494,14 +566,14 @@ impl Object {
         // let pre = Instant::now();
         // let bvh = BVH::build(&mut flat_triangles);
         // dbg!(Instant::now().duration_since(pre));
-        Object {
+        Object::Mesh(MeshObject {
             polygon_mesh: p,
             material: mat,
             // kind: Kind::Phong,
             // flat_triangles,
             // bvh: bvh,
             idx: obj_idx,
-        }
+        })
     }
 
     // fn hit(&self, origin: Vec3, dir: Vec3) -> Option<Hit> {
@@ -534,6 +606,106 @@ impl Object {
     //
     //     // None
     // }
+
+    fn get_tex_uv_coords(&self, hit: &Hit) -> (f64, f64) {
+        match hit {
+            &Hit::Mesh {
+                u,
+                v,
+                triangle_idx,
+                ..
+            } => {
+                let obj = self.as_mesh();
+
+                let (u1, v1) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&triangle_idx][0]];
+                let (u2, v2) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&triangle_idx][1]];
+                let (u3, v3) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&triangle_idx][2]];
+
+                let text_u = bary_interp(u1, u2, u3, u, v);
+                let text_v = bary_interp(v1, v2, v3, u, v);
+
+                (text_u, text_v)
+            },
+            _ => (0.0, 1.0),
+        }
+    }
+
+    fn material(&self) -> &Material {
+        match &self {
+            Mesh(mesh) => &mesh.material,
+            Sphere(sphere) => &sphere.material,
+        }
+    }
+
+    fn as_mesh(&self) -> &MeshObject {
+        match &self {
+            Mesh(m) => m,
+            _ => panic!("not a mesh"),
+        }
+    }
+
+    fn as_sphere(&self) -> &SphereObject {
+        match &self {
+            Sphere(s) => s,
+            _ => panic!("not a sphere"),
+        }
+    }
+
+    fn normal_at_hit(&self, hit: &Hit, origin: Vec3, dir: Vec3) -> Vec3 {
+        match *hit {
+            Hit::Mesh {
+                distance,
+                triangle_idx,
+                u,
+                v,
+                ..
+            } => {
+                let obj = self.as_mesh();
+
+                let Triangle([vi1, vi2, vi3]) = obj.polygon_mesh.triangles[triangle_idx];
+                let n1 = obj.polygon_mesh.vertice_normals[vi1];
+                let n2 = obj.polygon_mesh.vertice_normals[vi2];
+                let n3 = obj.polygon_mesh.vertice_normals[vi3];
+
+                let normal = bary_interp(n1, n2, n3, u, v);
+
+                match obj.material {
+                    Opaque {
+                        normal: ref normal_kind,
+                        ..
+                    } => {
+                        let (u1, v1) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&triangle_idx][0]];
+                        let (u2, v2) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&triangle_idx][1]];
+                        let (u3, v3) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&triangle_idx][2]];
+
+                        let text_u = bary_interp(u1, u2, u3, u, v);
+                        let text_v = bary_interp(v1, v2, v3, u, v);
+
+                        normal_kind.normal_at(normal, text_u, text_v, u, v)
+                    },
+                    _ => normal,
+                }
+            },
+            Hit::Sphere {
+                distance,
+                ..
+            } => {
+                let obj = self.as_sphere();
+
+                let hit_point = origin + distance * dir;
+                let normal = (hit_point - obj.center).normalize();
+
+                // let normal = if normal.dot(&dir) > 0.0 {
+                //     // println!("normal: {:?}", normal);
+                //     -1.0 * normal
+                // } else {
+                //     normal
+                // };
+
+                normal
+            }
+        }
+    }
 }
 
 
@@ -670,17 +842,30 @@ impl PolygonMesh {
 
 
 #[derive(Debug, Copy, Clone)]
-struct Hit {
-    distance: f64,
-    u: f64,
-    v: f64,
-    triangle_idx: usize,
-    obj_idx: usize,
+enum Hit {
+    Mesh {
+        distance: f64,
+        u: f64,
+        v: f64,
+        triangle_idx: usize,
+        obj_idx: usize,
+    },
+    Sphere {
+        distance: f64,
+        obj_idx: usize,
+    },
 }
 
 impl Hit {
-    fn new(distance: f64, u: f64, v: f64, triangle_idx: usize, obj_idx: usize) -> Hit {
-        Hit {
+    fn is_sphere(&self) -> bool {
+        match self {
+            Hit::Sphere { .. } => true,
+            _ => false,
+        }
+    }
+
+    fn new_mesh(distance: f64, u: f64, v: f64, triangle_idx: usize, obj_idx: usize) -> Hit {
+        Hit::Mesh {
             distance,
             u,
             v,
@@ -688,11 +873,32 @@ impl Hit {
             obj_idx,
         }
     }
+
+    fn new_sphere(distance: f64, obj_idx: usize) -> Hit {
+        Hit::Sphere {
+            distance,
+            obj_idx,
+        }
+    }
+
+    fn distance(&self) -> f64 {
+        match &self {
+            Hit::Mesh { distance, .. } => *distance,
+            Hit::Sphere { distance, .. } => *distance,
+        }
+    }
+
+    fn obj_idx(&self) -> usize {
+        match &self {
+            Hit::Mesh { obj_idx, .. } => *obj_idx,
+            Hit::Sphere { obj_idx, .. } => *obj_idx,
+        }
+    }
 }
 
 impl PartialEq for Hit {
     fn eq(&self, other: &Self) -> bool {
-        self.distance == other.distance
+        self.distance() == other.distance()
     }
 }
 
@@ -700,13 +906,13 @@ impl Eq for Hit {}
 
 impl PartialOrd for Hit {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.distance.partial_cmp(&other.distance)
+        self.distance().partial_cmp(&other.distance())
     }
 }
 
 impl Ord for Hit {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.distance.partial_cmp(&other.distance).unwrap()
+        self.partial_cmp(&other).unwrap()
     }
 }
 
@@ -738,18 +944,21 @@ impl Scene {
     fn from_objects(objs: Vec<Object>) -> Scene {
         let mut triangles = Vec::new();
         for (obj_idx, obj) in objs.iter().enumerate() {
-            for (idx, &Triangle([vi1, vi2, vi3])) in obj.polygon_mesh.triangles.iter().enumerate() {
-                let v1 = obj.polygon_mesh.vertices[vi1];
-                let v2 = obj.polygon_mesh.vertices[vi2];
-                let v3 = obj.polygon_mesh.vertices[vi3];
 
-                let flat_tri = FlatTriangle {
-                    vertices: [v1, v2, v3],
-                    node_index: 0,
-                    triangle_idx: idx,
-                    obj_idx: obj_idx,
-                };
-                triangles.push(flat_tri);
+            if let Object::Mesh(ref obj) = obj {
+                for (idx, &Triangle([vi1, vi2, vi3])) in obj.polygon_mesh.triangles.iter().enumerate() {
+                    let v1 = obj.polygon_mesh.vertices[vi1];
+                    let v2 = obj.polygon_mesh.vertices[vi2];
+                    let v3 = obj.polygon_mesh.vertices[vi3];
+
+                    let flat_tri = FlatTriangle {
+                        vertices: [v1, v2, v3],
+                        node_index: 0,
+                        triangle_idx: idx,
+                        obj_idx: obj_idx,
+                    };
+                    triangles.push(flat_tri);
+                }
             }
         }
 
@@ -780,11 +989,25 @@ impl Scene {
         // }).reduce(|| ((f64::INFINITY, 0.0, 0.0), 0), |(mt, mi), (t, i)| if t.0 < mt.0 { (t, i) } else { (mt, mi) });
 
 
-        if least.0.0 == f64::INFINITY {
+        let mut least = if least.0.0 == f64::INFINITY {
             None
         } else {
-            Some(Hit::new(least.0.0, least.0.1, least.0.2, least.1.0, least.1.1))
+            Some(Hit::new_mesh(least.0.0, least.0.1, least.0.2, least.1.0, least.1.1))
+        };
+
+        // Now also check all spheres
+        for (obj_idx, obj) in self.0.iter().enumerate() {
+            if let Object::Sphere(ref sphere) = obj {
+                if let Some(t) = intersects_sphere(sphere.center, sphere.radius, origin, dir) {
+                    if t < least.map(|l| l.distance()).unwrap_or(f64::INFINITY) {
+                        least = Some(Hit::new_sphere(t, obj_idx));
+                    }
+                }
+            }
         }
+
+
+        return least;
 
         // None
     }
@@ -796,6 +1019,9 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
     }
 
     if depth > MAX_DEPTH {
+        // return interp_sky(dir);
+        // println!("Reached limit");
+
         return [0.0, 0.0, 0.0];
     }
 
@@ -819,20 +1045,19 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
             return interp_sky(dir);
         }
         Some(hit) => {
-            let obj_idx = hit.obj_idx;
-            let obj = &scene.0[obj_idx];
-            let hit_pos = origin + hit.distance * dir;
+            let obj_idx = hit.obj_idx();
+            let obj: &Object = &scene.0[obj_idx];
+            let hit_pos = origin + hit.distance() * dir;
 
-            let Triangle([vi1, vi2, vi3]) = obj.polygon_mesh.triangles[hit.triangle_idx];
-            let n1 = obj.polygon_mesh.vertice_normals[vi1];
-            let n2 = obj.polygon_mesh.vertice_normals[vi2];
-            let n3 = obj.polygon_mesh.vertice_normals[vi3];
+            let normal = obj.normal_at_hit(&hit, origin, dir);
 
-            let normal = bary_interp(n1, n2, n3, hit.u, hit.v);
+            // println!("Hit at {:?}", hit_pos);
+            // println!("Normal at {:?}", normal);
+
 
             let camera_dir = (-1.0 * dir).normalize();
 
-            match &obj.material {
+            match obj.material() {
                 &Opaque {
                     diffuse,
                     metallic,
@@ -841,16 +1066,17 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
                     emission,
                     normal: ref normal_kind,
                 } => {
-                    let (u1, v1) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&hit.triangle_idx][0]];
-                    let (u2, v2) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&hit.triangle_idx][1]];
-                    let (u3, v3) = obj.polygon_mesh.uv_coords[obj.polygon_mesh.triangle_to_v_to_uv_idx[&hit.triangle_idx][2]];
+                    // Need to handle color of both sphere and mesh
+                    let (tex_u, tex_v) = obj.get_tex_uv_coords(&hit);
+                    let Vec3([point_r, point_g, point_b]) = color.color_at(tex_u, tex_v);
 
-                    let text_u = bary_interp(u1, u2, u3, hit.u, hit.v);
-                    let text_v = bary_interp(v1, v2, v3, hit.u, hit.v);
-
-                    let Vec3([point_r, point_g, point_b]) = color.color_at(text_u, text_v);
-
-                    let normal = normal_kind.normal_at(n1, n2, n3, text_u, text_v, hit.u, hit.v);
+                    // if hit.is_sphere() {
+                    //     //print colors
+                    //     println!("{:?}", point_r);
+                    //     println!("{:?}", point_g);
+                    //     println!("{:?}", point_b);
+                    //     println!("{:?}", normal);
+                    // }
 
                     // if backface, set reflected ray to be the same as the original ray to pass through the triangle
                     let r = if camera_dir.dot(&normal) < 0.0 {
@@ -859,7 +1085,7 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
                         2.0 * (camera_dir.dot(&normal)) * normal - camera_dir
                     };
                     let orig = hit_pos;
-                    let mut dir = r.normalize();
+                    let mut reflected_camera = r.normalize();
 
                     let mut rng = rand::thread_rng();
 
@@ -877,25 +1103,30 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
                         let yd = rng.gen_range(-diffuse..=diffuse);
                         let zd = rng.gen_range(-diffuse..=diffuse);
 
-                        // let mut diffuse_out = Vec3([0.0, 0.0, 0.0]);
-                        //
-                        // loop {
-                        //     let random_sphere = random_unit_sphere_surface(&mut rng);
-                        //
-                        //     if random_sphere.dot(&normal) > 0.0 {
-                        //         diffuse_out = random_sphere;
-                        //         break;
-                        //     }
-                        // }
+                        let mut diffuse_out = Vec3([0.0, 0.0, 0.0]);
+                        loop {
+                            let random_sphere = random_unit_sphere_surface(&mut rng);
+
+                            if random_sphere.dot(&normal) > 0.0 {
+                                diffuse_out = random_sphere;
+                                break;
+                            }
+                        }
+                        let diffuse_out = diffuse * diffuse_out + normal;
+                        let diffuse_out = if diffuse_out.length() < epsilon {
+                            normal
+                        } else {
+                            diffuse_out.normalize()
+                        };
 
                         // this is randomly scattered across unit sphere
                         // let mut diffuse_out = (diffuse * random_unit_sphere_surface(&mut rng) + normal).normalize();
 
 
                         // this is fuzzy reflection/metallic
-                        let fuzzy_out = (Vec3([xm, ym, zm]) + dir).normalize();
+                        let fuzzy_out = (Vec3([xm, ym, zm]) + reflected_camera).normalize();
                         // this is randomly scattered across unit cube
-                        let diffuse_out = (Vec3([xd, yd, zd]) + normal).normalize();
+                        // let diffuse_out = (Vec3([xd, yd, zd]) + normal).normalize();
 
                         let new_dir = how_metallic * fuzzy_out + (1.0 - how_metallic) * diffuse_out;
 
@@ -1030,17 +1261,19 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
     });
 }
 
-const MAX_DEPTH: i32 = 100;
-const NUM_SAMPLES_PER_PIXEL: i32 = 80;
+const MAX_DEPTH: i32 = 50;
+const NUM_SAMPLES_PER_PIXEL: i32 = 20;
 const NUM_SAMPLES_PER_BOUNCE: i32 = 1;
 
 const NUM_SAMPLES_FOR_DOF: u32 = 1;
 const DOF_STRENGTH: f64 = 0.0;
 
+const SCALE: u32 = 4;
+const WIDTH: u32 = SCALE * 160;
+const HEIGHT: u32 = SCALE * 120;
+
 fn main() {
-    const scale: u32 = 4;
-    const width: u32 = scale * 160;
-    const height: u32 = scale * 120;
+
     // const width: u32 = 1000;
     // const height: u32 = 1000;
 
@@ -1051,13 +1284,13 @@ fn main() {
 
     let opengl = OpenGL::V3_2;
     let mut window: PistonWindow =
-        WindowSettings::new("ray", (width, height))
+        WindowSettings::new("ray", (WIDTH, HEIGHT))
             .exit_on_esc(true)
             .graphics_api(opengl)
             .build()
             .unwrap();
 
-    let mut canvas = ImageBuffer::new(width, height);
+    let mut canvas = ImageBuffer::new(WIDTH, HEIGHT);
 
     let spot_poly = load_obj("spot_triangulated.obj");
     let spot_text = ::image::io::Reader::open("spot_texture_2.png").unwrap().decode().unwrap();
@@ -1121,7 +1354,8 @@ fn main() {
             // floor.translate(Vec3([0.0, -0.1, 0.0]));
             let obj = Object::from_mesh(floor, objects.len(), Opaque {
                 metallic: 0.005,
-                how_metallic: 1.0,
+                // how_metallic: 1.0,
+                how_metallic: 0.0,
                 diffuse: 0.8,
                 color: SolidColor(Vec3([0.7; 3])),
                 emission: Vec3([0.0, 0.0, 0.0]),
@@ -1133,25 +1367,25 @@ fn main() {
                 3.0 * t.sin() + (3.0*t).sin()
             }
 
-            let mut phong = spot_poly.clone();
-            // phong.rotate_z(10.0 * oscillate(t * 40.0) * std::f64::consts::PI / 180.0);
-            // phong.rotate_x(t * 10000.0 * std::f64::consts::PI / 180.0);
-            // phong.rotate_x(40.0 * (t * 2500.0).cos() * std::f64::consts::PI / 180.0);
-            // phong.rotate_y((220.0 + 10.0 * (t*40.0).sin()) * std::f64::consts::PI / 180.0);
-            phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
-            // phong.rotate_y((150.0) * std::f64::consts::PI / 180.0);
-            // phong.translate(Vec3([0.0, 0.0, -2.5]));
-            phong.translate(Vec3([-1.0, 0.0, -2.5]));
-            // let obj = Object::from_mesh(phong, objects.len(),Opaque {
-            //     metallic: 0.0,
-            //     how_metallic: 0.0,
-            //     diffuse: 0.5,
-            //     color: Texture(spot_text.clone()),
-            //     emission: Vec3([0.0, 0.0, 0.0]),
-            //     normal: SimpleNormal,
-            // });
-            let obj = Object::from_mesh(phong, objects.len(), Dielectric(1.5));
-            objects.push(obj);
+            // let mut phong = spot_poly.clone();
+            // // phong.rotate_z(10.0 * oscillate(t * 40.0) * std::f64::consts::PI / 180.0);
+            // // phong.rotate_x(t * 10000.0 * std::f64::consts::PI / 180.0);
+            // // phong.rotate_x(40.0 * (t * 2500.0).cos() * std::f64::consts::PI / 180.0);
+            // // phong.rotate_y((220.0 + 10.0 * (t*40.0).sin()) * std::f64::consts::PI / 180.0);
+            // phong.rotate_y((150.0 + t*1000.0) * std::f64::consts::PI / 180.0);
+            // // phong.rotate_y((150.0) * std::f64::consts::PI / 180.0);
+            // // phong.translate(Vec3([0.0, 0.0, -2.5]));
+            // phong.translate(Vec3([-1.0, 0.0, -2.5]));
+            // // let obj = Object::from_mesh(phong, objects.len(),Opaque {
+            // //     metallic: 0.0,
+            // //     how_metallic: 0.0,
+            // //     diffuse: 0.5,
+            // //     color: Texture(spot_text.clone()),
+            // //     emission: Vec3([0.0, 0.0, 0.0]),
+            // //     normal: SimpleNormal,
+            // // });
+            // let obj = Object::from_mesh(phong, objects.len(), Dielectric(1.5));
+            // objects.push(obj);
 
             let mut mirror = spot_poly.clone();
             mirror.rotate_y((220.0) * std::f64::consts::PI / 180.0);
@@ -1166,19 +1400,50 @@ fn main() {
             });
             objects.push(obj);
 
-            let mut sphere = sphere_poly.clone();
-            sphere.translate(Vec3([0.0, 2.0, -7.0]));
-            let sphere_obj = Object::from_mesh(sphere, objects.len(),Opaque {
+            // let mut sphere = sphere_poly.clone();
+            // sphere.translate(Vec3([0.0, 2.0, -7.0]));
+            // let sphere_obj = Object::from_mesh(sphere, objects.len(),Opaque {
+            //     metallic: 0.0,
+            //     how_metallic: 0.0,
+            //     diffuse: 0.9,
+            //     // color: SolidColor(Vec3([1.0, 1.0, 1.0])),
+            //     color: SolidColor(Vec3([1.0, 0.3, 0.0])),
+            //     // emission: Vec3([1.0, 1.0, 1.0]),
+            //     emission: Vec3([0.0, 0.0, 0.0]),
+            //     normal: SimpleNormal,
+            // });
+
+            let sphere_obj = Object::sphere(Vec3([-0.3, -0.2, -2.8]), 0.5, objects.len(), Opaque {
                 metallic: 0.0,
-                how_metallic: 0.0,
+                how_metallic: 1.0,
                 diffuse: 0.9,
-                // color: SolidColor(Vec3([1.0, 1.0, 1.0])),
-                color: SolidColor(Vec3([1.0, 0.3, 0.0])),
-                // emission: Vec3([1.0, 1.0, 1.0]),
+                color: SolidColor(Vec3([0.7, 0.7, 0.75])),
                 emission: Vec3([0.0, 0.0, 0.0]),
                 normal: SimpleNormal,
             });
-            // let sphere_obj = Object::from_mesh(sphere, objects.len(), Kind::Dielectric(1.5));
+            objects.push(sphere_obj.clone());
+
+            let sphere_obj = Object::sphere(Vec3([-1.0, -0.5, -2.8]), 0.2, objects.len(), Opaque {
+                metallic: 0.0,
+                how_metallic: 1.0,
+                diffuse: 0.9,
+                color: SolidColor(Vec3([1.0, 1.0, 1.0])),
+                emission: Vec3([0.0, 0.0, 0.0]),
+                normal: SimpleNormal,
+            });
+            objects.push(sphere_obj.clone());
+
+            let sphere_obj = Object::sphere(Vec3([0.3, -0.4, -1.4]), 0.3, objects.len(), Dielectric(1.5));
+            objects.push(sphere_obj.clone());
+
+            let sphere_obj = Object::sphere(Vec3([0.0, 1.3, -2.4]), 1.0, objects.len(),  Opaque {
+                metallic: 0.0,
+                how_metallic: 0.0,
+                diffuse: 1.0,
+                color: SolidColor(Vec3([0.7, 0.0, 0.0])),
+                emission: Vec3([0.0, 0.0, 0.0]),
+                normal: SimpleNormal,
+            });
             objects.push(sphere_obj.clone());
 
             // let mut ogre = ogre_poly.clone();
@@ -1198,9 +1463,9 @@ fn main() {
 
             dbg!(Instant::now().duration_since(start));
             let pre = Instant::now();
-            // if Instant::now().duration_since(start) < Duration::from_secs(10) {
-                render::<width, height>(&mut canvas, &scene);
-            // }
+            if Instant::now().duration_since(start) < Duration::from_secs(10) {
+                render::<WIDTH, HEIGHT>(&mut canvas, &scene);
+            }
             dbg!(Instant::now().duration_since(pre));
             dbg!(Instant::now().duration_since(start));
 
