@@ -956,10 +956,9 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
             let mut curr_g = 0.0;
             let mut curr_b = 0.0;
 
-            for _ in 0..10 {
-                let strength = 0.1;
-                let orig_x_offset = rng.gen_range(-strength..strength);
-                let orig_y_offset = rng.gen_range(-strength..strength);
+            for _ in 0..NUM_SAMPLES_FOR_DOF {
+                let orig_x_offset = rng.gen_range(-DOF_STRENGTH..=DOF_STRENGTH);
+                let orig_y_offset = rng.gen_range(-DOF_STRENGTH..=DOF_STRENGTH);
 
                 let orig = Vec3([orig_x_offset, orig_y_offset, 0.0]);
                 let dir = 2.4 * Vec3([p_x, p_y, -1.0]).normalize();
@@ -970,7 +969,7 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
                 curr_b += b;
             }
 
-            [curr_r / 10.0, curr_g / 10.0, curr_b / 10.0]
+            [curr_r / NUM_SAMPLES_FOR_DOF as f64, curr_g / NUM_SAMPLES_FOR_DOF as f64, curr_b / NUM_SAMPLES_FOR_DOF as f64]
         }).collect::<Vec<_>>().into_iter().for_each(|[r, g, b]| {
             total_r += r;
             total_g += g;
@@ -994,6 +993,9 @@ fn render<const width: u32, const height: u32>(canvas: &mut ImageBuffer<Rgba<u8>
 const MAX_DEPTH: i32 = 100;
 const NUM_SAMPLES_PER_PIXEL: i32 = 10;
 const NUM_SAMPLES_PER_BOUNCE: i32 = 1;
+
+const NUM_SAMPLES_FOR_DOF: u32 = 1;
+const DOF_STRENGTH: f64 = 0.0;
 
 fn main() {
     const scale: u32 = 4;
