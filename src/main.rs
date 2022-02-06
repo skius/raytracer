@@ -296,7 +296,21 @@ fn interp_sky(dir: Vec3) -> [f64; 3] {
     // let light_dir = Vec3([1.0, 1.0, 1.0]).normalize();
     // res = (dir.dot(&light_dir) + 1.0)/2.0 * res;
 
-    res.0
+
+    // res.0
+
+    let c1 = [0.4, 0.6, 0.8];
+    let c2 = [0.8, 0.8, 0.8];
+
+    let light_c = [1.5; 3];
+
+    let light_dir = Vec3([1.0, 2.0, 1.0]).normalize();
+
+    let t = dir.dot(&light_dir);
+    let t = ((t + 1.0)/2.0).powf(6.0);
+
+    let Vec3(res) = (1.0 - t) * (dir.0[1] * Vec3(c2) + (1.0 - dir.0[1]) * Vec3(c1)) + t * Vec3(light_c);
+    res
 }
 
 fn reflect(v: Vec3, n: Vec3) -> Vec3 {
@@ -886,7 +900,7 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
                         let out_dir = how_metallic * fuzzy_out + (1.0 - how_metallic) * diffuse_out;
 
                         // Against shadow acne
-                        let out_orig = out_orig + 0.001 * out_dir;
+                        let out_orig = out_orig + ANTI_SHADOW_ACNE_LENGTH * out_dir;
 
                         let [rr_, rg_, rb_] = raytrace(out_orig, out_dir, scene, depth + 1);
                         reflected_r += rr_;
@@ -898,27 +912,26 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
                     reflected_g /= NUM_SAMPLES_PER_BOUNCE as f64;
                     reflected_b /= NUM_SAMPLES_PER_BOUNCE as f64;
 
-                    let material_loss = 0.0; // idk if used
+                    let material_loss = 0.0; // idk if useful
 
-                    // return [
-                    //     point_r * (reflected_r * (1.0 - material_loss) + emission.0[0]),
-                    //     point_g * (reflected_g * (1.0 - material_loss) + emission.0[1]),
-                    //     point_b * (reflected_b * (1.0 - material_loss) + emission.0[2])
-                    // ];
-
-                    if emission.length() > epsilon {
-                        return [
-                            emission.0[0],
-                            emission.0[1],
-                            emission.0[2]
-                        ];
-                    }
+                    // if emission.length() > epsilon {
+                    //     return [
+                    //         emission.0[0],
+                    //         emission.0[1],
+                    //         emission.0[2]
+                    //     ];
+                    // }
 
                     return [
-                        point_r * reflected_r * (1.0 - material_loss) + emission.0[0],
-                        point_g * reflected_g * (1.0 - material_loss) + emission.0[1],
-                        point_b * reflected_b * (1.0 - material_loss) + emission.0[2]
+                        point_r * (reflected_r * (1.0 - material_loss) + emission.0[0]),
+                        point_g * (reflected_g * (1.0 - material_loss) + emission.0[1]),
+                        point_b * (reflected_b * (1.0 - material_loss) + emission.0[2])
                     ];
+                    // return [
+                    //     point_r * reflected_r * (1.0 - material_loss) + emission.0[0],
+                    //     point_g * reflected_g * (1.0 - material_loss) + emission.0[1],
+                    //     point_b * reflected_b * (1.0 - material_loss) + emission.0[2]
+                    // ];
                 },
                 &Dielectric(index_of_refraction) => {
                     let front_face = normal.dot(&camera_dir) > 0.0;
@@ -950,7 +963,7 @@ fn raytrace(origin: Vec3, dir: Vec3, scene: &Scene, depth: i32) -> [f64; 3] {
                     };
 
 
-                    let [rr_, rg_, rb_] = raytrace(hit_pos + 0.001 * dir, dir, scene, depth + 1);
+                    let [rr_, rg_, rb_] = raytrace(hit_pos + ANTI_SHADOW_ACNE_LENGTH * dir, dir, scene, depth + 1);
 
                     return [rr_, rg_, rb_];
                 }
@@ -1025,6 +1038,8 @@ fn render<const width: u32, const height: u32>(canvas: &mut Vec<Vec<[f64; 3]>>, 
     });
 }
 
+const ANTI_SHADOW_ACNE_LENGTH: f64 = epsilon;
+
 const MAX_DEPTH: i32 = 200;
 const NUM_SAMPLES_PER_PIXEL: i32 = 10;
 const NUM_SAMPLES_PER_BOUNCE: i32 = 1;
@@ -1032,7 +1047,7 @@ const NUM_SAMPLES_PER_BOUNCE: i32 = 1;
 const NUM_SAMPLES_FOR_DOF: u32 = 1;
 const DOF_STRENGTH: f64 = 0.0;
 
-const SCALE: u32 = 4;
+const SCALE: u32 = 10;
 const WIDTH: u32 = SCALE * 160;
 const HEIGHT: u32 = SCALE * 120;
 
@@ -1207,7 +1222,8 @@ fn load_obj(filename: impl AsRef<Path>) -> PolygonMesh {
 
 fn lens_scene() -> Scene {
     let spot_poly = load_obj("spot_triangulated.obj");
-    let spot_text = ::image::io::Reader::open("spot_texture_2.png").unwrap().decode().unwrap();
+    // let spot_text = ::image::io::Reader::open("spot_texture_2.png").unwrap().decode().unwrap();
+    let spot_text = ::image::io::Reader::open("spot_texture_20k.png").unwrap().decode().unwrap();
     let triangle_poly = load_obj("triangle_floor.obj");
     let sphere_poly = load_obj("sphere.obj");
 
@@ -1253,7 +1269,8 @@ fn lens_scene() -> Scene {
 
 fn sphere_scene() -> Scene {
     let spot_poly = load_obj("spot_triangulated.obj");
-    let spot_text = ::image::io::Reader::open("spot_texture_2.png").unwrap().decode().unwrap();
+    // let spot_text = ::image::io::Reader::open("spot_texture_2.png").unwrap().decode().unwrap();
+    let spot_text = ::image::io::Reader::open("spot_texture_20k.png").unwrap().decode().unwrap();
     let triangle_poly = load_obj("triangle_floor.obj");
     let sphere_poly = load_obj("sphere.obj");
 
@@ -1327,6 +1344,7 @@ fn sphere_scene() -> Scene {
         how_metallic: 0.0,
         diffuse: 1.0,
         color: Texture(spot_text.clone()),
+        // emission: 7.0 * Vec3([0.5, 0.5, 0.5]),
         emission: Vec3([0.0, 0.0, 0.0]),
         normal: SimpleNormal,
     });
@@ -1360,6 +1378,16 @@ fn sphere_scene() -> Scene {
         how_metallic: 1.0,
         diffuse: 0.9,
         color: SolidColor(Vec3([1.0, 1.0, 1.0])),
+        emission: Vec3([0.0, 0.0, 0.0]),
+        normal: SimpleNormal,
+    });
+    objects.push(sphere_obj.clone());
+
+    let sphere_obj = Object::sphere(Vec3([-1.5, -0.4, -2.3]), 0.3, objects.len(), Opaque {
+        metallic: 0.0,
+        how_metallic: 1.0,
+        diffuse: 0.9,
+        color: SolidColor(Vec3([0.0, 0.0, 0.6])),
         emission: Vec3([0.0, 0.0, 0.0]),
         normal: SimpleNormal,
     });
